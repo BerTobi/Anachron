@@ -16,6 +16,8 @@ and is printed by `anachron --version`.
   Ctrl+C-cancels-line, Ctrl+D-EOF); piped input and the Windows build keep the cooked
   path. Also disables alternate-scroll (`?1007`) on startup so the wheel scrolls
   scrollback during generation.
+- Build: targets now depend on the project headers, so a `core/version.h` bump (or any
+  header edit) triggers a rebuild instead of leaving a stale binary on incremental builds.
 
 ## [0.1.0] - 2026-06-22
 

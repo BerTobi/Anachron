@@ -25,6 +25,11 @@ TOOLS  = tools/tools.c
 INFER  = infer/infer_stub.c
 MAIN   = main.c
 
+# Every target compiles all sources in one command, so list the headers as an
+# explicit prerequisite — otherwise editing a header (e.g. a version.h bump) would
+# not trigger a rebuild.
+HEADERS    = $(wildcard core/*.h platform/*.h infer/*.h tools/*.h)
+
 NATIVE_SRC = $(CORE) $(TOOLS) $(INFER) platform/platform_posix.c $(MAIN)
 WIN_SRC    = $(CORE) $(TOOLS) $(INFER) platform/platform_win32.c $(MAIN)
 TEST_SRC   = tests/test_core.c core/strbuf.c core/json.c core/sandbox.c core/toolcall.c core/verify.c core/obsfmt.c core/edit.c core/glob.c core/gitignore.c core/diff.c core/prompt.c
@@ -74,10 +79,10 @@ REMOTE_SRC = $(CORE) $(TOOLS) infer/infer_remote.c platform/platform_posix.c $(M
 
 all: anachron
 
-anachron: $(NATIVE_SRC)
+anachron: $(NATIVE_SRC) $(HEADERS)
 	$(CC) $(CFLAGS) $(NATIVE_SRC) -o $@
 
-anachron-test: $(TEST_SRC)
+anachron-test: $(TEST_SRC) $(HEADERS)
 	$(CC) $(CFLAGS) $(TEST_SRC) -o $@
 
 test: anachron-test
@@ -93,7 +98,7 @@ verify-e2e: anachron
 
 # XP-safe cross build: subsystem 5.01, static, API ceiling pinned to XP SP3.
 win: anachron.exe
-anachron.exe: $(WIN_SRC)
+anachron.exe: $(WIN_SRC) $(HEADERS)
 	$(WINCC) $(CFLAGS) -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx \
 	    -D_WIN32_WINNT=0x0501 -DWINVER=0x0501 \
 	    -static -mconsole \
@@ -104,7 +109,7 @@ anachron.exe: $(WIN_SRC)
 # against the SSE2-only libllama/ggml from the Phase-0 spike. Run with e.g.:
 #   ./anachron-llama --model spike-phase0/models/qwen2.5-coder-0.5b-instruct-q8_0.gguf
 llama: anachron-llama
-anachron-llama: $(LL_CSRC) infer/infer_llama.cpp
+anachron-llama: $(LL_CSRC) infer/infer_llama.cpp $(HEADERS)
 	@mkdir -p build-obj
 	@for f in $(LL_CSRC); do \
 	    echo "  CC  $$f"; \
@@ -153,7 +158,7 @@ $(XP_DIST)/anachron.exe: $(LL_CSRC_WIN) infer/infer_llama.cpp
 # Remote/GPU-offload build: thin HTTP client, NO local model/llama libs. Point it at
 # a llama.cpp server with ANACHRON_REMOTE=host:port. Pure C, links like the stub build.
 remote: anachron-remote
-anachron-remote: $(REMOTE_SRC)
+anachron-remote: $(REMOTE_SRC) $(HEADERS)
 	$(CC) $(CFLAGS) $(REMOTE_SRC) -o $@
 
 clean:
