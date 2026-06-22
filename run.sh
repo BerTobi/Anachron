@@ -3,7 +3,8 @@
 # Usage:  ./run.sh               interactive conversation (0.5B Qwen-Coder, fast)
 #         ./run.sh --hammer      Hammer 2.0 0.5B function-calling fine-tune (best tool use)
 #         ./run.sh --hammer-big  Hammer 2.0 1.5B (reliable tool use, better code, slow)
-#         ./run.sh --hammer21[-big]  Hammer 2.1 0.5B/1.5B (does NOT fit our tool format)
+#         ./run.sh --hammer21    Hammer 2.1 0.5B (prints code, no tool call - avoid)
+#         ./run.sh --hammer21-big Hammer 2.1 1.5B (works, but very slow ~11 min/turn)
 #         ./run.sh --big         1.5B Qwen-Coder (better code, ~5x slower)
 #         ./run.sh "task..."     run one task and exit
 #         ./run.sh --hammer "…"  combine
@@ -23,10 +24,11 @@ MODEL_HAMMER21_BIG=spike-phase0/models/hammer2.1-1.5b-q8_0.gguf
 #                      <tool_call> format. Best default for agentic use.
 #   --hammer-big    -> Hammer 2.0 1.5B: same reliable tool-calling, better code; much
 #                      slower (a cold turn is minutes on CPU). Still the 2.0 family.
-#   --hammer21 / --hammer21-big -> Hammer 2.1 0.5B / 1.5B. NOTE: this newer fine-tune is
-#                      specialized to its OWN tool format and does NOT emit ANACHRON's
-#                      <tool_call> at either size (it prints code/prose instead). Kept
-#                      available for experimentation; not recommended for agentic use here.
+#   --hammer21      -> Hammer 2.1 0.5B. NOT for agentic use: it prints raw code instead
+#                      of a tool call (the 0.5B can't produce the call JSON in our format).
+#   --hammer21-big  -> Hammer 2.1 1.5B. WORKS — emits the call JSON (the lenient parser
+#                      accepts it even though 2.1 wraps it in a ``` fence) — but is the
+#                      slowest option (~11 min for a cold turn on this CPU).
 #   --big/-b        -> 1.5B Qwen-Coder (better pure code, slower).
 MODEL=${ANACHRON_MODEL:-$MODEL_SMALL}
 case "$1" in

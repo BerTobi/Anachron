@@ -19,11 +19,12 @@ and is printed by `anachron --version`.
 - Hammer 2.1 0.5B + 1.5B converted and available (`--hammer21`, `--hammer21-big`).
 
 ### Notes
-- Hammer 2.1 does NOT emit ANACHRON's `<tool_call>` format at either size — the newer
-  fine-tune is specialized to its own tool schema and prints code/prose instead. So
-  `--hammer` stays Hammer **2.0** 0.5B (and `--hammer-big` is 2.0 1.5B) for agentic use;
-  the 2.1 builds are kept only for experimentation. Using the 2.1 line would require
-  adapting the harness to Hammer's native tool format.
+- Hammer model fit for ANACHRON's tool format: **2.0 0.5B/1.5B work** (clean `<tool_call>`);
+  **2.1 1.5B works** too — it emits the call JSON wrapped in a ``` fence, which the lenient
+  parser accepts — but it's the slowest option (~11 min cold turn on the dev host);
+  **2.1 0.5B does NOT** — it prints raw code instead of a call. So `--hammer` stays Hammer
+  2.0 0.5B (fast) and `--hammer-big` is 2.0 1.5B; `--hammer21-big` is usable if slow,
+  `--hammer21` is not recommended.
 
 ## [0.2.1] - 2026-06-22
 
