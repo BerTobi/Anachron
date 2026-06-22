@@ -7,6 +7,8 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-22
+
 ### Fixed
 - "code/build a program/game" now writes the file instead of trying to compile a file
   that doesn't exist yet. The small model was copying the few-shot's standalone
@@ -87,7 +89,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/BerTobi/Anachron/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/BerTobi/Anachron/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/BerTobi/Anachron/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/BerTobi/Anachron/releases/tag/v0.1.0
