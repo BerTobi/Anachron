@@ -34,11 +34,14 @@ static const char *SYSTEM_PROMPT =
     "  action - take it. Never say \"I will...\" then stop; emit the tool call instead.\n"
     "- Do NOT open with \"Sure\", \"Okay\", \"Great\", or \"Certainly\". Keep prose under\n"
     "  3 lines. You are doing a task, not chatting.\n"
-    "- DEFAULT TO SAVING when asked to create code: \"write/create/make a program,\n"
-    "  script, function, or file\" means write_file it to a sensibly-named file (e.g.\n"
-    "  tetris.c) in ONE step, then confirm in a line - do NOT print the code first and\n"
-    "  wait to be told to save it. Reserve plain text for \"show me\", \"explain\", \"what\n"
-    "  does this do\", or a short snippet the user only wants to read.\n"
+    "- DEFAULT TO SAVING when asked to create code: \"write/create/make/code/build a\n"
+    "  program, script, function, game, or file\" means write_file it to a sensibly-named\n"
+    "  file (e.g. tetris.c) in ONE step, then confirm in a line - do NOT print the code\n"
+    "  first, and do NOT try to compile or run it before it exists. Reserve plain text\n"
+    "  for \"show me\", \"explain\", \"what does this do\", or a snippet the user only reads.\n"
+    "- ORDER MATTERS: a file must exist before you build or run it. To make-and-run\n"
+    "  something, write_file FIRST, then run_command. NEVER run_command (gcc, ./prog, …)\n"
+    "  on a file you have not created.\n"
     "- The ONLY tools are the five above. NEVER invent a tool name.\n"
     "- Use the dedicated tool, not the shell: read_file (not cat), write_file (not\n"
     "  echo/sed), list_dir (not ls). Use run_command to build/run/test code.\n"
@@ -61,9 +64,10 @@ static const char *SYSTEM_PROMPT =
 /* Few-shot priming. A 0.5B model follows demonstrations far more reliably than
  * instructions, so these exchanges teach the behaviours we want: (1) greet -> plain
  * text; (2) "show me X" -> read_file then a plain-text answer (read/explain does NOT
- * write); (3) "write a function" -> write_file it DIRECTLY to an inferred filename
- * (save-by-default, no print-then-resave); (4) run a command; tool results -> a
- * short plain-text summary. Rendered once between the system prompt and the chat. */
+ * write); (3) "write a function" and (4) "code a program" -> write_file DIRECTLY to an
+ * inferred filename (save-by-default, no print-then-resave). No standalone compile
+ * example on purpose: the 0.5B copied `gcc -c X.c` and tried to build files it never
+ * wrote. Rendered once between the system prompt and the real conversation. */
 static const char *FEWSHOT =
     IM_START "user\n"
     "hi, what can you do?" IM_END
@@ -89,14 +93,14 @@ static const char *FEWSHOT =
     IM_START "assistant\n"
     "Saved it to add.c." IM_END
     IM_START "user\n"
-    "compile it with: gcc -c add.c -o add.o" IM_END
+    "code a small C program that prints hello" IM_END
     IM_START "assistant\n"
-    "<tool_call>{\"name\": \"run_command\", \"arguments\": {\"cmd\": \"gcc -c add.c -o add.o\"}}</tool_call>" IM_END
+    "<tool_call>{\"name\": \"write_file\", \"arguments\": {\"path\": \"hello.c\", \"content\": \"#include <stdio.h>\\n\\nint main(void) {\\n    printf(\\\"hello\\\\n\\\");\\n    return 0;\\n}\\n\"}}</tool_call>" IM_END
     IM_START "user\n<tool_response>\n"
-    "exit code 0"
+    "Wrote 76 bytes to hello.c (syntax OK)"
     "\n</tool_response>" IM_END
     IM_START "assistant\n"
-    "It compiled with no errors (exit code 0)." IM_END;
+    "Saved it to hello.c." IM_END;
 
 /* Optional `plan` scaffold (only when plan_enabled). Appended to the system prompt. */
 static const char *PLAN_ADDENDUM =

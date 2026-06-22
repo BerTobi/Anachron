@@ -7,6 +7,13 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+### Fixed
+- "code/build a program/game" now writes the file instead of trying to compile a file
+  that doesn't exist yet. The small model was copying the few-shot's standalone
+  `gcc -c add.c` compile example; that example was removed and replaced with a
+  "code a program -> write_file" demonstration, and "code"/"build"/"game" were added to
+  the save-by-default triggers.
+
 ## [0.2.0] - 2026-06-22
 
 ### Changed
