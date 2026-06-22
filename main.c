@@ -18,6 +18,7 @@
 #include "obsfmt.h"
 #include "json.h"
 #include "interrupt.h"
+#include "version.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -138,6 +139,7 @@ static void usage(const char *prog) {
         "  --no-plan         force-disable the plan tool (overrides \"plan\": true in config)\n"
         "  --no-color        do not ANSI-colour the diff shown on edits\n"
         "  --log PATH        append a debug log (prompts, raw model output, tool results)\n"
+        "  -V, --version     print the version and exit\n"
         "Defaults may also be set in agent.json / .anachron.json in the current directory\n"
         "(keys: model, sandbox, grammar, log, ctx, max_iters, verify, plan, grammar_enabled,\n"
         "color); CLI flags override the config. With no task arguments, starts an interactive\n"
@@ -569,6 +571,12 @@ int main(int argc, char **argv) {
             free(owned_model); free(owned_sandbox);
             free(owned_grammar); free(owned_log);
             return 0;
+        } else if (strcmp(a, "-V") == 0 || strcmp(a, "--version") == 0) {
+            fprintf(stdout, "anachron %s\n", ANACHRON_VERSION);
+            sb_free(&task);
+            free(owned_model); free(owned_sandbox);
+            free(owned_grammar); free(owned_log);
+            return 0;
         } else {
             if (task.len) sb_putc(&task, ' ');
             sb_append(&task, a);
@@ -668,7 +676,7 @@ int main(int argc, char **argv) {
         }
 #endif
         fprintf(stdout,
-            "ANACHRON - local agentic coding harness\n"
+            "ANACHRON " ANACHRON_VERSION " - local agentic coding harness\n"
             "  backend: %s\n"
             "  sandbox: %s\n"
             "  grammar: %s\n"

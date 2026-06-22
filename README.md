@@ -76,12 +76,21 @@ In the REPL, `/help` lists commands (`/new` `/undo` `/save` `/sessions` `/model`
 `@path` attaches a file. Try the demo: copy `examples/strutil/` into the sandbox and ask
 the agent to read, search, or edit it.
 
+## Versioning
+
+Semantic versioning (`MAJOR.MINOR.PATCH`), pre-1.0 until validated on real hardware. The
+version lives in `core/version.h` and is printed by `anachron --version`. Releases are
+tagged `vX.Y.Z` and recorded in [`CHANGELOG.md`](CHANGELOG.md) (Keep a Changelog format) —
+to cut one: bump `core/version.h`, move the `Unreleased` notes into a dated entry, commit,
+then `git tag -a vX.Y.Z`.
+
 ## Status & docs
 
 Phases 0–4 (spike → core loop → in-process inference → antiX i686 → Windows XP build) are
 done on the dev host; on-real-Pentium-M/XP-hardware validation is the remaining arc.
-`HANDOFF.md` is the running state-of-the-project log; `Instructions.md` is the operating
-brief and hard constraints; `DEPLOY.md` covers the cross-builds.
+`HANDOFF.md` is the running state-of-the-project log; `CHANGELOG.md` is the release history;
+`Instructions.md` is the operating brief and hard constraints; `DEPLOY.md` covers the
+cross-builds.
 
 ## A note on the model ceiling
 
