@@ -13,6 +13,10 @@ and is printed by `anachron --version`.
   `gcc -c add.c` compile example; that example was removed and replaced with a
   "code a program -> write_file" demonstration, and "code"/"build"/"game" were added to
   the save-by-default triggers.
+- When a `run_command` fails with "No such file or directory", the observation now
+  appends a hint telling the model to write_file the file first — recovers the common
+  "tried to compile a file it never wrote" case (e.g. after copying a stale `gcc`
+  command from the conversation) instead of looping on the same failed build.
 
 ## [0.2.0] - 2026-06-22
 

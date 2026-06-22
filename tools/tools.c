@@ -259,12 +259,22 @@ static char *do_run_command(const tool_ctx *ctx, const char *cmd, int *ok) {
         free(out);
         return err_obs("ERROR: could not launch command \"%s\"", cmd, ok);
     }
+    /* Very common self-inflicted failure on small models: compiling/running a file
+     * that was never written (e.g. `gcc foo.c` before foo.c exists). Detect it and
+     * steer the model to write_file first — a fresh in-loop hint lands far better on
+     * a 0.5B than a system-prompt rule it has already ignored. */
+    int missing_file = (code != 0 && out &&
+                        strstr(out, "No such file or directory") != NULL);
     strbuf sb; sb_init(&sb);
     sb_appendf(&sb, "exit code %d\n", code);
     if (!out || len == 0)
         sb_append(&sb, "(command produced no output)"); /* clearer than an empty result */
     else
         append_capped(&sb, out, len);
+    if (missing_file)
+        sb_append(&sb, "\nHINT: a file in that command does not exist yet. Create it "
+                       "with write_file FIRST, then run the command. Never compile or "
+                       "run a file you have not written.");
     free(out);
     *ok = (code == 0);
     char *r = dup_cstr(sb_cstr(&sb));
