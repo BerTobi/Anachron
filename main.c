@@ -23,6 +23,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <termios.h>   /* raw-mode line editing on a POSIX terminal */
+#include <unistd.h>
+#endif
 
 #define DISPLAY_MAX_LINES 20
 
@@ -222,7 +226,8 @@ static const char *detect_cc(void) {
 }
 
 /* Read one line from stdin into `task`. Returns 0 on EOF. */
-static int read_line(strbuf *task) {
+/* Cooked-mode line read (piped input, non-terminals, and the Windows build). */
+static int read_line_cooked(strbuf *task) {
     char line[4096];
     if (!fgets(line, sizeof line, stdin)) return 0;
     size_t n = strlen(line);
@@ -230,6 +235,73 @@ static int read_line(strbuf *task) {
     sb_clear(task);
     sb_append(task, line);
     return 1;
+}
+
+#ifndef _WIN32
+/* Raw-mode line editor for an interactive POSIX terminal. Reads byte-by-byte with
+ * echo off so escape sequences (arrow keys, mouse-wheel-as-arrows, etc.) are
+ * consumed and ignored instead of being echoed as `^[[A`/`^[[B` garbage and folded
+ * into the command. Handles printable input, Backspace, Enter, Ctrl+C (cancel the
+ * line) and Ctrl+D (EOF). Returns 1 = line ready, 0 = EOF/quit, -1 = not a TTY
+ * (caller falls back to cooked mode). */
+static int read_line_raw(strbuf *task) {
+    struct termios orig, raw;
+    if (tcgetattr(STDIN_FILENO, &orig) != 0) return -1;
+    raw = orig;
+    raw.c_lflag &= ~((tcflag_t)(ICANON | ECHO | ISIG));  /* we handle echo + control */
+    raw.c_iflag &= ~((tcflag_t)(IXON | ICRNL));
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+
+    sb_clear(task);
+    int ret = 1;
+    for (;;) {
+        unsigned char c;
+        if (read(STDIN_FILENO, &c, 1) != 1) { ret = task->len ? 1 : 0; break; }
+        if (c == '\r' || c == '\n') { fputc('\n', stdout); fflush(stdout); break; }
+        if (c == 3) {                       /* Ctrl+C: cancel the current line */
+            fputs("^C\n", stdout); fflush(stdout); sb_clear(task); break;
+        }
+        if (c == 4) {                       /* Ctrl+D: EOF only on an empty line */
+            if (task->len == 0) { ret = 0; break; }
+            continue;
+        }
+        if (c == 127 || c == 8) {           /* Backspace */
+            if (task->len) { task->data[--task->len] = '\0'; fputs("\b \b", stdout); fflush(stdout); }
+            continue;
+        }
+        if (c == 27) {                      /* ESC: drain an escape sequence and ignore it */
+            struct termios t = raw;
+            t.c_cc[VMIN] = 0; t.c_cc[VTIME] = 1;   /* ~0.1s, so a lone ESC won't block */
+            tcsetattr(STDIN_FILENO, TCSANOW, &t);
+            unsigned char d;
+            if (read(STDIN_FILENO, &d, 1) == 1 && (d == '[' || d == 'O'))
+                while (read(STDIN_FILENO, &d, 1) == 1)
+                    if (d >= 0x40 && d <= 0x7e) break;   /* final byte of a CSI/SS3 */
+            tcsetattr(STDIN_FILENO, TCSANOW, &raw);
+            continue;
+        }
+        if (c >= 0x20 && c < 0x7f) {        /* printable: append + echo */
+            sb_putc(task, (char)c);
+            fputc((int)c, stdout);
+            fflush(stdout);
+        }
+        /* other control bytes are ignored */
+    }
+    tcsetattr(STDIN_FILENO, TCSANOW, &orig);
+    return ret;
+}
+#endif /* !_WIN32 */
+
+static int read_line(strbuf *task) {
+#ifndef _WIN32
+    if (isatty(STDIN_FILENO)) {
+        int r = read_line_raw(task);
+        if (r >= 0) return r;   /* -1 => not a TTY after all; fall back */
+    }
+#endif
+    return read_line_cooked(task);
 }
 
 /* ---- interactive slash commands -------------------------------------------
@@ -671,7 +743,10 @@ int main(int argc, char **argv) {
          * instead of emitting escape sequences into the prompt (TTY + POSIX only). */
 #ifndef _WIN32
         if (plat_isatty_stdout()) {
-            fputs("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l", stdout);
+            /* Disable mouse reporting (1000/1002/1003/1006), alternate-scroll (1007 —
+             * the one that turns the wheel into arrow-key escapes), and leave any
+             * alternate screen (1049) a prior program may have left on. */
+            fputs("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1049l", stdout);
             fflush(stdout);
         }
 #endif

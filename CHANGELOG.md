@@ -7,6 +7,14 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+### Fixed
+- Interactive prompt no longer echoes mouse-wheel / arrow-key escape sequences as
+  `^[[A`/`^[[B` garbage or folds them into the command. On a POSIX terminal the REPL now
+  reads input in raw mode and consumes/ignores escape sequences (with Backspace, Enter,
+  Ctrl+C-cancels-line, Ctrl+D-EOF); piped input and the Windows build keep the cooked
+  path. Also disables alternate-scroll (`?1007`) on startup so the wheel scrolls
+  scrollback during generation.
+
 ## [0.1.0] - 2026-06-22
 
 First tagged release. A from-scratch, native C99 agentic coding harness with local,
