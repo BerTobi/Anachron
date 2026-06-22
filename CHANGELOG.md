@@ -7,6 +7,8 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-22
+
 ### Changed
 - Creating code now saves to a file by default. "write/create/make a program, script,
   function, or file" writes it (to a sensibly-inferred filename) in one step and
@@ -20,6 +22,10 @@ and is printed by `anachron --version`.
 - The cooked-mode prompt now also strips terminal escape sequences from the line, so
   mouse-wheel/arrow bytes can't corrupt the command even when raw-mode editing is
   unavailable (e.g. inside some multiplexers).
+
+### Added
+- `--tty-diag` flag: reports whether the terminal grants raw mode (for debugging the
+  interactive line editor).
 
 ## [0.1.1] - 2026-06-22
 
@@ -70,6 +76,7 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/BerTobi/Anachron/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/BerTobi/Anachron/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/BerTobi/Anachron/releases/tag/v0.1.0
