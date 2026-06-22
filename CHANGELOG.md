@@ -7,6 +7,8 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-22
+
 ### Added
 - Colour theme for the interactive REPL: the banner, `you>` prompt, tool-call lines,
   results/errors, notices, and the `final` header are now coloured (muted ANSI). Auto-on
@@ -16,15 +18,15 @@ and is printed by `anachron --version`.
   generated tokens (Unicode blocks with colour, plain numbers without).
 - Hammer 2.0 1.5B model (`--hammer-big`): the 2.0 family's reliable `<tool_call>` with
   better code than the 0.5B; slower (a cold turn is minutes on CPU).
-- Hammer 2.1 0.5B + 1.5B converted and available (`--hammer21`, `--hammer21-big`).
+- Hammer 2.1 1.5B model (`--hammer21-big`): works — it emits the call JSON wrapped in a
+  ``` fence, which the lenient parser accepts — but it's the slowest option (~11 min cold
+  turn on the dev host).
 
 ### Notes
-- Hammer model fit for ANACHRON's tool format: **2.0 0.5B/1.5B work** (clean `<tool_call>`);
-  **2.1 1.5B works** too — it emits the call JSON wrapped in a ``` fence, which the lenient
-  parser accepts — but it's the slowest option (~11 min cold turn on the dev host);
-  **2.1 0.5B does NOT** — it prints raw code instead of a call. So `--hammer` stays Hammer
-  2.0 0.5B (fast) and `--hammer-big` is 2.0 1.5B; `--hammer21-big` is usable if slow,
-  `--hammer21` is not recommended.
+- Hammer model fit for ANACHRON's tool format: **2.0 0.5B/1.5B** and **2.1 1.5B** all emit
+  a usable tool call; **2.1 0.5B does not** (it prints raw code), so it was dropped.
+  `--hammer` stays Hammer 2.0 0.5B (fast); use `--hammer-big` (2.0 1.5B) or `--hammer21-big`
+  (2.1 1.5B) for a larger, slower model.
 
 ## [0.2.1] - 2026-06-22
 
@@ -108,7 +110,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/BerTobi/Anachron/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/BerTobi/Anachron/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/BerTobi/Anachron/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/BerTobi/Anachron/compare/v0.1.0...v0.1.1

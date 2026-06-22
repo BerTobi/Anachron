@@ -3,7 +3,6 @@
 # Usage:  ./run.sh               interactive conversation (0.5B Qwen-Coder, fast)
 #         ./run.sh --hammer      Hammer 2.0 0.5B function-calling fine-tune (best tool use)
 #         ./run.sh --hammer-big  Hammer 2.0 1.5B (reliable tool use, better code, slow)
-#         ./run.sh --hammer21    Hammer 2.1 0.5B (prints code, no tool call - avoid)
 #         ./run.sh --hammer21-big Hammer 2.1 1.5B (works, but very slow ~11 min/turn)
 #         ./run.sh --big         1.5B Qwen-Coder (better code, ~5x slower)
 #         ./run.sh "task..."     run one task and exit
@@ -16,7 +15,6 @@ MODEL_SMALL=spike-phase0/models/qwen2.5-coder-0.5b-instruct-q8_0.gguf
 MODEL_BIG=spike-phase0/models/qwen2.5-coder-1.5b-instruct-q8_0.gguf
 MODEL_HAMMER=spike-phase0/models/hammer2.0-0.5b-q8_0.gguf
 MODEL_HAMMER_BIG=spike-phase0/models/hammer2.0-1.5b-q8_0.gguf
-MODEL_HAMMER21=spike-phase0/models/hammer2.1-0.5b-q8_0.gguf
 MODEL_HAMMER21_BIG=spike-phase0/models/hammer2.1-1.5b-q8_0.gguf
 
 # Model selection (unless ANACHRON_MODEL is set explicitly):
@@ -24,18 +22,16 @@ MODEL_HAMMER21_BIG=spike-phase0/models/hammer2.1-1.5b-q8_0.gguf
 #                      <tool_call> format. Best default for agentic use.
 #   --hammer-big    -> Hammer 2.0 1.5B: same reliable tool-calling, better code; much
 #                      slower (a cold turn is minutes on CPU). Still the 2.0 family.
-#   --hammer21      -> Hammer 2.1 0.5B. NOT for agentic use: it prints raw code instead
-#                      of a tool call (the 0.5B can't produce the call JSON in our format).
 #   --hammer21-big  -> Hammer 2.1 1.5B. WORKS — emits the call JSON (the lenient parser
 #                      accepts it even though 2.1 wraps it in a ``` fence) — but is the
-#                      slowest option (~11 min for a cold turn on this CPU).
+#                      slowest option (~11 min for a cold turn on this CPU). (Hammer 2.1
+#                      0.5B was dropped: it prints raw code instead of a tool call.)
 #   --big/-b        -> 1.5B Qwen-Coder (better pure code, slower).
 MODEL=${ANACHRON_MODEL:-$MODEL_SMALL}
 case "$1" in
     --big|-b)         MODEL=${ANACHRON_MODEL:-$MODEL_BIG};            shift ;;
     --hammer|-H)      MODEL=${ANACHRON_MODEL:-$MODEL_HAMMER};         shift ;;
     --hammer-big)     MODEL=${ANACHRON_MODEL:-$MODEL_HAMMER_BIG};     shift ;;
-    --hammer21)       MODEL=${ANACHRON_MODEL:-$MODEL_HAMMER21};       shift ;;
     --hammer21-big)   MODEL=${ANACHRON_MODEL:-$MODEL_HAMMER21_BIG};   shift ;;
 esac
 
