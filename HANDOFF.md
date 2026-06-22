@@ -550,6 +550,21 @@ validated on the real Hammer model at the old tight ctx=2048 — a 3-turn growin
 (two code generations, then a write_file) completed with no overflow. Unstick a
 wedged live session with `/new` or a larger `--ctx`/`$ANACHRON_CTX`.
 
+## Sampler: repeat penalty + runaway-stop guard — DONE
+
+A real session degenerated: asked to re-emit a big file it had printed earlier, the 0.5B
+(greedy decode) fell into emitting one token forever (endless spaces) until the user hit
+Ctrl-C. Fixes in `infer/infer_llama.cpp`: (1) a gentle repeat penalty in the sampler chain
+`llama_sampler_init_penalties(64, 1.1, 0, 0)` — presence-only, mild, so it doesn't distort
+code indentation or tool-call JSON; (2) a hard runaway-stop guard in the gen loop — if the
+same token id repeats 40× in a row, stop cleanly instead of grinding to the context cap.
+Validated on Hammer-0.5b: the tetris re-emit that spewed before now terminates finite (the
+write was then correctly rejected by verify because the model's C was invalid — guardrail
+working); greeting still talks (no over-call); an explicit `write_file` still emits and
+passes the syntax check. Net: the spew is gone with no tool-use regression. (Root re-emit
+problem — a 0.5B reproducing a big file verbatim — is the model ceiling; the remote backend
+with a capable model is the real path.)
+
 ## Next steps
 
 - **Lift model success rate (cheap):** PARTIALLY DONE — the FEWSHOT in `core/prompt.c`
