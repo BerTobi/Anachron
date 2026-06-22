@@ -7,6 +7,8 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-22
+
 ### Fixed
 - Interactive prompt no longer echoes mouse-wheel / arrow-key escape sequences as
   `^[[A`/`^[[B` garbage or folds them into the command. On a POSIX terminal the REPL now
@@ -52,5 +54,6 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/BerTobi/Anachron/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/BerTobi/Anachron/releases/tag/v0.1.0
