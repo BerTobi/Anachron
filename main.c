@@ -226,14 +226,28 @@ static const char *detect_cc(void) {
 }
 
 /* Read one line from stdin into `task`. Returns 0 on EOF. */
-/* Cooked-mode line read (piped input, non-terminals, and the Windows build). */
+/* Cooked-mode line read (piped input, non-terminals, and the Windows build). Strips
+ * terminal escape sequences (e.g. arrow keys / mouse-wheel-as-arrows) so they don't
+ * end up inside the command even when raw-mode editing isn't available. */
 static int read_line_cooked(strbuf *task) {
     char line[4096];
     if (!fgets(line, sizeof line, stdin)) return 0;
     size_t n = strlen(line);
     while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = '\0';
     sb_clear(task);
-    sb_append(task, line);
+    for (size_t i = 0; i < n; ) {
+        if (line[i] == 0x1b) {               /* ESC: skip a CSI/SS3 escape sequence */
+            i++;
+            if (i < n && (line[i] == '[' || line[i] == 'O')) {
+                i++;
+                while (i < n && !(line[i] >= 0x40 && line[i] <= 0x7e)) i++;
+                if (i < n) i++;              /* consume the final byte */
+            }
+            continue;
+        }
+        if ((unsigned char)line[i] >= 0x20) sb_putc(task, line[i]);
+        i++;
+    }
     return 1;
 }
 
@@ -743,10 +757,11 @@ int main(int argc, char **argv) {
          * instead of emitting escape sequences into the prompt (TTY + POSIX only). */
 #ifndef _WIN32
         if (plat_isatty_stdout()) {
-            /* Disable mouse reporting (1000/1002/1003/1006), alternate-scroll (1007 —
-             * the one that turns the wheel into arrow-key escapes), and leave any
-             * alternate screen (1049) a prior program may have left on. */
-            fputs("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l\x1b[?1049l", stdout);
+            /* Disable mouse reporting (1000/1002/1003/1006) and alternate-scroll (1007,
+             * which turns the wheel into arrow-key escapes). NOT 1049 (leave alt-screen):
+             * emitting it when not in the alt buffer makes some terminals restore a stale
+             * cursor and draw over prior output. */
+            fputs("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1007l", stdout);
             fflush(stdout);
         }
 #endif

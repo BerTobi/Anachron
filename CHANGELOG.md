@@ -7,6 +7,13 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+### Fixed
+- Banner no longer draws over previous terminal output: stopped emitting `ESC[?1049l`
+  (leave-alternate-screen) on startup, which made some terminals restore a stale cursor.
+- The cooked-mode prompt now also strips terminal escape sequences from the line, so
+  mouse-wheel/arrow bytes can't corrupt the command even when raw-mode editing is
+  unavailable (e.g. inside some multiplexers).
+
 ## [0.1.1] - 2026-06-22
 
 ### Fixed
