@@ -4,6 +4,7 @@
 #include "strbuf.h"
 #include "json.h"
 #include "platform.h"
+#include "interrupt.h"
 
 #include <ctype.h>
 #include <stdlib.h>
@@ -218,6 +219,10 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
             s->turn_completion_tokens += ct;   /* generated tokens summed over the turn */
         }
 
+        /* Ctrl+C during generation: abort the turn without recording or parsing the
+         * partial output, and return to the prompt. */
+        if (interrupt_pending()) { sb_free(&acc); break; }
+
         const char *out = sb_cstr(&acc);
         history_push(h, MSG_ASSISTANT, out);
         log_kv(cfg, "model", out);
@@ -358,7 +363,8 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
         toolcall_free(&call);
     }
 
-    if (!finished) NOTICE(cfg, "reached iteration cap without calling final");
+    if (!finished && !interrupt_pending())
+        NOTICE(cfg, "reached iteration cap without calling final");
 
     free(active_plan);
     sb_free(&prompt);

@@ -11,6 +11,7 @@
  * gentle repeat penalty and a hard runaway-repetition stop so a tiny model can't
  * loop on one token forever. */
 #include "infer.h"
+#include "interrupt.h"
 
 #include "llama.h"
 #include "ggml-backend.h"
@@ -125,15 +126,24 @@ extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *gram
     llama_memory_seq_rm(mem, 0, (llama_pos)n_keep, -1); /* drop cached positions >= n_keep */
     c->cached.resize((size_t)n_keep);
 
-    /* Decode the new prefix tail [n_keep, n_tok). Positions continue from the cache. */
+    /* Decode the new prefix tail [n_keep, n_tok) in chunks, checking for Ctrl+C
+     * between them, so an interrupt during a long prompt decode (e.g. a big first
+     * turn on slow hardware) takes effect promptly. Cached tokens are pushed per
+     * chunk, so an aborted decode leaves c->cached consistent with the KV cache. */
     {
-        int n_new = n_tok - n_keep;
-        llama_batch batch = llama_batch_get_one(toks.data() + n_keep, n_new);
-        if (llama_decode(c->ctx, batch) != 0) {
-            fprintf(stderr, "infer_llama: decode (prompt) failed\n");
-            return -1;
+        const int CHUNK = 32;   /* small enough that Ctrl+C during a slow prompt
+                                   decode is felt within a few seconds, big enough
+                                   that per-batch overhead stays negligible */
+        for (int off = n_keep; off < n_tok; off += CHUNK) {
+            if (interrupt_pending()) return 0;   /* aborted mid-prompt; no generation */
+            int n_new = (n_tok - off < CHUNK) ? (n_tok - off) : CHUNK;
+            llama_batch batch = llama_batch_get_one(toks.data() + off, n_new);
+            if (llama_decode(c->ctx, batch) != 0) {
+                fprintf(stderr, "infer_llama: decode (prompt) failed\n");
+                return -1;
+            }
+            for (int i = off; i < off + n_new; i++) c->cached.push_back(toks[i]);
         }
-        for (int i = n_keep; i < n_tok; i++) c->cached.push_back(toks[i]);
     }
 
     /* Greedy + optional LAZY grammar. Lazy so the model can just talk: the grammar
@@ -160,6 +170,7 @@ extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *gram
     int same_run = 0;
     const int MAX_SAME_RUN = 40;  /* consecutive identical tokens => runaway */
     for (int gen = 0; gen < n_ctx; gen++) {
+        if (interrupt_pending()) break;   /* Ctrl+C: stop generating, keep the session */
         llama_token id = llama_sampler_sample(smpl, c->ctx, -1);
         if (llama_vocab_is_eog(c->vocab, id)) break;
 

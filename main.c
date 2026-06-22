@@ -17,6 +17,7 @@
 #include "sandbox.h"
 #include "obsfmt.h"
 #include "json.h"
+#include "interrupt.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -643,16 +644,29 @@ int main(int argc, char **argv) {
     agent_session session;
     agent_session_init(&session, &cfg);
 
+    /* Ctrl+C now interrupts the current generation instead of killing the process
+     * (a second press still force-quits). */
+    interrupt_install();
+
     int rc = 0;
     if (task.len > 0) {
         /* One-shot mode. */
         char *msg = expand_mentions(sb_cstr(&task), sandbox);
         double t0 = plat_time_sec();
+        interrupt_clear();
         rc = agent_session_run_turn(&session, msg);
         print_turn_stats(plat_time_sec() - t0, &session);
         free(msg);
     } else {
-        /* Interactive conversation. */
+        /* Interactive conversation. Clear any leftover mouse-reporting mode a prior
+         * program may have left on, so the wheel scrolls the terminal's scrollback
+         * instead of emitting escape sequences into the prompt (TTY + POSIX only). */
+#ifndef _WIN32
+        if (plat_isatty_stdout()) {
+            fputs("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l", stdout);
+            fflush(stdout);
+        }
+#endif
         fprintf(stdout,
             "ANACHRON - local agentic coding harness\n"
             "  backend: %s\n"
@@ -668,6 +682,7 @@ int main(int argc, char **argv) {
             project_context ? "AGENTS.md loaded" : "(no AGENTS.md)",
             cfg_path ? cfg_path : "(none)");
         for (;;) {
+            plat_flush_input();   /* drop scroll/keystroke bytes from the last turn */
             fprintf(stdout, "\nyou> ");
             fflush(stdout);
             if (!read_line(&task)) { fprintf(stdout, "\n"); break; }
@@ -677,8 +692,11 @@ int main(int argc, char **argv) {
             if (cr == CMD_HANDLED) continue;
             char *msg = expand_mentions(sb_cstr(&task), sandbox);
             double t0 = plat_time_sec();
+            interrupt_clear();
             rc = agent_session_run_turn(&session, msg);
             print_turn_stats(plat_time_sec() - t0, &session);
+            if (interrupt_pending()) fprintf(stdout, "(interrupted)\n");
+            interrupt_clear();
             free(msg);
         }
     }

@@ -30,6 +30,11 @@ int  plat_mkdir(const char *path);
 /* 1 if standard output is an interactive terminal, else 0 (drives colour output). */
 int  plat_isatty_stdout(void);
 
+/* Discard any buffered, unread terminal input (best effort). Called before each
+ * prompt so stray bytes typed/scrolled during a long generation don't get read as
+ * the next command. No-op / harmless on a non-terminal. */
+void plat_flush_input(void);
+
 /* Run `cmd` through the system shell with `cwd` as the working directory,
  * capturing stdout+stderr combined into *out (malloc'd, nul-terminated).
  * *exit_code receives the child's exit status. Returns 0 if the command was

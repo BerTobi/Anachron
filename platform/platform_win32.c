@@ -91,6 +91,11 @@ int plat_isatty_stdout(void) {
     return _isatty(_fileno(stdout)) ? 1 : 0;
 }
 
+void plat_flush_input(void) {
+    HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+    if (h != INVALID_HANDLE_VALUE) FlushConsoleInputBuffer(h);
+}
+
 int plat_mkdir(const char *path) {
     if (_mkdir(path) == 0) return 0;
     DWORD attr = GetFileAttributesA(path);

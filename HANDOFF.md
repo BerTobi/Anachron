@@ -565,6 +565,28 @@ passes the syntax check. Net: the spew is gone with no tool-use regression. (Roo
 problem — a 0.5B reproducing a big file verbatim — is the model ceiling; the remote backend
 with a capable model is the real path.)
 
+## REPL hotkeys & terminal hygiene — DONE
+
+Ctrl+C used to kill the process (default SIGINT) and stray scroll/keystroke bytes leaked
+into the prompt as garbage. Fixes:
+- **Ctrl+C interrupts the current generation, not the process** — new `core/interrupt.c`
+  (SIGINT handler sets a `volatile sig_atomic_t`; a 2nd press before it's cleared restores
+  the default handler and re-raises, so a stuck process can still be force-killed).
+  `infer_llama` polls `interrupt_pending()` per generated token AND between 32-token
+  chunks of the prompt decode (the decode was one big call before, so an interrupt during
+  a slow first-turn decode wasn't felt until it finished — now ~2-3s). The agent loop
+  aborts the turn on interrupt without recording/parsing the partial output; main installs
+  the handler, clears it around each turn, and prints `(interrupted)`. Validated on the
+  real model: SIGINT mid-turn → `(interrupted)`, process survives, answers the next prompt,
+  `/quit` exits 0.
+- **Terminal-input hygiene** — `plat_flush_input` (tcflush / FlushConsoleInputBuffer)
+  discards buffered input before each prompt so scroll/keystrokes during a generation don't
+  become the next command; on startup (TTY, POSIX) the REPL emits the DECRST sequences to
+  disable any leftover mouse-reporting mode a prior program left on, so the wheel scrolls
+  the terminal's scrollback instead of injecting escape tokens. `plat_isatty_stdout` gates
+  colour and the mouse reset.
+All 5 targets warning-clean; unit + e2e + verify-e2e green.
+
 ## Next steps
 
 - **Lift model success rate (cheap):** PARTIALLY DONE — the FEWSHOT in `core/prompt.c`

@@ -20,7 +20,7 @@ WARN     = -Wall -Wextra
 SSE2     = -msse2 -mno-sse3
 CFLAGS  ?= -std=c99 -O2 $(WARN) $(SSE2) $(INCLUDES)
 
-CORE   = core/strbuf.c core/json.c core/sandbox.c core/toolcall.c core/verify.c core/obsfmt.c core/edit.c core/glob.c core/gitignore.c core/diff.c core/prompt.c core/agent.c
+CORE   = core/strbuf.c core/json.c core/sandbox.c core/toolcall.c core/verify.c core/obsfmt.c core/edit.c core/glob.c core/gitignore.c core/diff.c core/interrupt.c core/prompt.c core/agent.c
 TOOLS  = tools/tools.c
 INFER  = infer/infer_stub.c
 MAIN   = main.c

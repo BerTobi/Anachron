@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -89,6 +90,10 @@ void plat_dirlist_free(plat_dirlist *dl) {
 
 int plat_isatty_stdout(void) {
     return isatty(STDOUT_FILENO) ? 1 : 0;
+}
+
+void plat_flush_input(void) {
+    if (isatty(STDIN_FILENO)) tcflush(STDIN_FILENO, TCIFLUSH);
 }
 
 int plat_mkdir(const char *path) {
