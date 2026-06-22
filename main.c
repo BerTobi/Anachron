@@ -31,7 +31,22 @@
 
 #define DISPLAY_MAX_LINES 20
 
-typedef struct { FILE *out; FILE *log; } ui;
+/* ANSI palette — emitted only when the UI has color enabled (interactive POSIX
+ * terminal, not Windows, not --no-color). Kept muted and consistent. */
+#define A_RESET  "\x1b[0m"
+#define A_TITLE  "\x1b[1;36m"   /* bold cyan  — banner title, section headers */
+#define A_PROMPT "\x1b[1;32m"   /* bold green — the you> prompt */
+#define A_TOOL   "\x1b[36m"     /* cyan       — tool-call lines */
+#define A_OK     "\x1b[32m"     /* green      — success */
+#define A_ERR    "\x1b[31m"     /* red        — errors */
+#define A_DIM    "\x1b[2m"      /* dim        — labels, secondary text */
+#define A_NOTE   "\x1b[33m"     /* yellow     — notices */
+#define A_FINAL  "\x1b[1;35m"   /* bold magenta — the final header */
+
+typedef struct { FILE *out; FILE *log; int color; } ui;
+
+/* Return `code` if the UI has color on, else "" — lets format strings stay simple. */
+static const char *cc(const ui *u, const char *code) { return u->color ? code : ""; }
 
 /* Debug log sink: append one line to the log file when --log/ANACHRON_LOG is set. */
 static void ui_log(const char *text, void *ud) {
@@ -58,16 +73,17 @@ static void ui_message(const char *text, void *ud) {
 
 static void ui_tool_call(const tool_call *c, void *ud) {
     ui *u = ud;
+    const char *t = cc(u, A_TOOL), *r = cc(u, A_RESET);
     switch (c->kind) {
-        case TC_READ_FILE:   fprintf(u->out, "\n> read_file(%s)\n", c->path); break;
-        case TC_WRITE_FILE:  fprintf(u->out, "\n> write_file(%s, %zu bytes)\n",
-                                     c->path, strlen(c->content ? c->content : "")); break;
-        case TC_LIST_DIR:    fprintf(u->out, "\n> list_dir(%s)\n", c->path); break;
-        case TC_RUN_COMMAND: fprintf(u->out, "\n> run_command(%s)\n", c->cmd); break;
-        case TC_EDIT:        fprintf(u->out, "\n> edit(%s)\n", c->path); break;
-        case TC_SEARCH:      fprintf(u->out, "\n> search(%s)\n", c->pattern ? c->pattern : ""); break;
-        case TC_GLOB:        fprintf(u->out, "\n> glob(%s)\n", c->pattern ? c->pattern : ""); break;
-        case TC_PLAN:        fprintf(u->out, "\n> plan:\n%s\n", c->plan ? c->plan : ""); break;
+        case TC_READ_FILE:   fprintf(u->out, "\n%s> read_file(%s)%s\n", t, c->path, r); break;
+        case TC_WRITE_FILE:  fprintf(u->out, "\n%s> write_file(%s, %zu bytes)%s\n",
+                                     t, c->path, strlen(c->content ? c->content : ""), r); break;
+        case TC_LIST_DIR:    fprintf(u->out, "\n%s> list_dir(%s)%s\n", t, c->path, r); break;
+        case TC_RUN_COMMAND: fprintf(u->out, "\n%s> run_command(%s)%s\n", t, c->cmd, r); break;
+        case TC_EDIT:        fprintf(u->out, "\n%s> edit(%s)%s\n", t, c->path, r); break;
+        case TC_SEARCH:      fprintf(u->out, "\n%s> search(%s)%s\n", t, c->pattern ? c->pattern : "", r); break;
+        case TC_GLOB:        fprintf(u->out, "\n%s> glob(%s)%s\n", t, c->pattern ? c->pattern : "", r); break;
+        case TC_PLAN:        fprintf(u->out, "\n%s> plan:%s\n%s\n", t, r, c->plan ? c->plan : ""); break;
         default: break; /* final handled by ui_final */
     }
     fflush(u->out);
@@ -77,7 +93,8 @@ static void ui_tool_call(const tool_call *c, void *ud) {
  * file dump doesn't bury the transcript (the model still got the full text). */
 static void ui_tool_result(const char *obs, int ok, void *ud) {
     ui *u = ud;
-    fprintf(u->out, "  result%s:\n", ok ? "" : " (error)");
+    if (ok) fprintf(u->out, "%s  result:%s\n", cc(u, A_DIM), cc(u, A_RESET));
+    else    fprintf(u->out, "%s  result (error):%s\n", cc(u, A_ERR), cc(u, A_RESET));
     const char *p = obs;
     int line = 0;
     while (*p) {
@@ -99,13 +116,13 @@ static void ui_tool_result(const char *obs, int ok, void *ud) {
 
 static void ui_final(const char *message, void *ud) {
     ui *u = ud;
-    fprintf(u->out, "\n== final ==\n%s\n", message);
+    fprintf(u->out, "\n%s== final ==%s\n%s\n", cc(u, A_FINAL), cc(u, A_RESET), message);
     fflush(u->out);
 }
 
 static void ui_notice(const char *text, void *ud) {
     ui *u = ud;
-    fprintf(u->out, "\n[notice] %s\n", text);
+    fprintf(u->out, "\n%s[notice] %s%s\n", cc(u, A_NOTE), text, cc(u, A_RESET));
     fflush(u->out);
 }
 
@@ -120,12 +137,78 @@ static void ui_diff(const char *diff, void *ud) {
 /* Per-turn footer: wall-clock plus the backend's token counts when available.
  * "ctx" is the final step's prompt size (not a turn sum); "gen" is summed over the
  * turn's tool-loop iterations, so the two are deliberately on different bases. */
-static void print_turn_stats(double secs, const agent_session *s) {
+static void print_turn_stats(const ui *u, double secs, const agent_session *s) {
+    const char *d = cc(u, A_DIM), *r = cc(u, A_RESET);
     if (s->turn_prompt_tokens > 0 || s->turn_completion_tokens > 0)
-        fprintf(stdout, "\n(%.2fs - %d ctx + %d gen tokens)\n",
-                secs, s->turn_prompt_tokens, s->turn_completion_tokens);
+        fprintf(u->out, "\n%s(%.2fs - %d ctx + %d gen tokens)%s\n",
+                d, secs, s->turn_prompt_tokens, s->turn_completion_tokens, r);
     else
-        fprintf(stdout, "\n(%.2fs)\n", secs);
+        fprintf(u->out, "\n%s(%.2fs)%s\n", d, secs, r);
+}
+
+/* ---- session stats (for /stats) ---------------------------------------- */
+#define STAT_HIST 24   /* per-turn generated-token history kept for the graph */
+
+typedef struct {
+    int    turns;
+    long   gen_tokens;        /* total generated across the session */
+    long   ctx_tokens;        /* sum of per-turn final prompt sizes (context processed) */
+    double seconds;           /* total wall-clock across turns */
+    int    hist[STAT_HIST];   /* per-turn generated tokens, written as a ring */
+    int    hist_n;            /* total turns recorded */
+} session_stats;
+
+static void stats_record(session_stats *st, const agent_session *s, double secs) {
+    st->turns++;
+    st->gen_tokens += s->turn_completion_tokens;
+    st->ctx_tokens += s->turn_prompt_tokens;
+    st->seconds    += secs;
+    st->hist[st->hist_n % STAT_HIST] = s->turn_completion_tokens;
+    st->hist_n++;
+}
+
+/* UTF-8 block characters for the sparkline (eighths, low -> high). */
+static const char *const SPARK[8] = {
+    "\xe2\x96\x81", "\xe2\x96\x82", "\xe2\x96\x83", "\xe2\x96\x84",
+    "\xe2\x96\x85", "\xe2\x96\x86", "\xe2\x96\x87", "\xe2\x96\x88"
+};
+
+static void stats_render(const ui *u, const session_stats *st) {
+    const char *T = cc(u, A_TITLE), *D = cc(u, A_DIM), *G = cc(u, A_OK), *R = cc(u, A_RESET);
+    fprintf(u->out, "\n%sSession stats%s\n", T, R);
+    if (st->turns == 0) { fprintf(u->out, "  %sno turns yet%s\n", D, R); return; }
+
+    fprintf(u->out, "  %sturns           %s %d\n", D, R, st->turns);
+    fprintf(u->out, "  %sgenerated tokens%s %s%ld%s  (avg %ld/turn)\n",
+            D, R, G, st->gen_tokens, R, st->gen_tokens / st->turns);
+    fprintf(u->out, "  %scontext tokens  %s %ld  (processed)\n", D, R, st->ctx_tokens);
+    fprintf(u->out, "  %swall time       %s %.1fs\n", D, R, st->seconds);
+    if (st->seconds >= 0.05)   /* avoid a nonsense rate when timing is ~0 (e.g. the stub) */
+        fprintf(u->out, "  %sthroughput      %s %s%.2f tok/s%s  (generated / wall-clock)\n",
+                D, R, G, (double)st->gen_tokens / st->seconds, R);
+    else
+        fprintf(u->out, "  %sthroughput      %s n/a (too fast to measure)\n", D, R);
+
+    int n = st->hist_n < STAT_HIST ? st->hist_n : STAT_HIST;
+    int start = st->hist_n < STAT_HIST ? 0 : st->hist_n % STAT_HIST;
+    int mx = 1;
+    for (int k = 0; k < n; k++) { int v = st->hist[(start + k) % STAT_HIST]; if (v > mx) mx = v; }
+    fprintf(u->out, "  %sgen tokens/turn %s ", D, R);
+    if (u->color) {
+        fputs(G, u->out);
+        for (int k = 0; k < n; k++) {
+            int v = st->hist[(start + k) % STAT_HIST];
+            int lvl = v * 7 / mx; if (lvl < 0) lvl = 0; if (lvl > 7) lvl = 7;
+            fputs(SPARK[lvl], u->out);
+        }
+        fputs(R, u->out);
+        fprintf(u->out, "  (peak %d)\n", mx);
+    } else {
+        for (int k = 0; k < n; k++)
+            fprintf(u->out, "%d ", st->hist[(start + k) % STAT_HIST]);
+        fputc('\n', u->out);
+    }
+    fflush(u->out);
 }
 
 static void usage(const char *prog) {
@@ -142,13 +225,13 @@ static void usage(const char *prog) {
         "  --plan            offer the experimental `plan` tool (off by default; small\n"
         "                    local models fixate on it - intended for a capable backend)\n"
         "  --no-plan         force-disable the plan tool (overrides \"plan\": true in config)\n"
-        "  --no-color        do not ANSI-colour the diff shown on edits\n"
+        "  --color/--no-color  force ANSI colour on/off (default: on for an interactive TTY)\n"
         "  --log PATH        append a debug log (prompts, raw model output, tool results)\n"
         "  -V, --version     print the version and exit\n"
         "Defaults may also be set in agent.json / .anachron.json in the current directory\n"
         "(keys: model, sandbox, grammar, log, ctx, max_iters, verify, plan, grammar_enabled,\n"
         "color); CLI flags override the config. With no task arguments, starts an interactive\n"
-        "conversation; type /help for in-session commands (/new /undo /save /model ...).\n",
+        "conversation; type /help for in-session commands (/new /undo /save /model /stats ...).\n",
         prog);
 }
 
@@ -416,7 +499,8 @@ static void cmd_undo(agent_session *s, const char *sandbox) {
  * and `ctx_tokens` let /model swap the inference backend in place. */
 static cmd_result handle_command(const char *line, agent_session *s,
                                  const char *sandbox, int ctx_tokens,
-                                 infer_ctx **backend_slot) {
+                                 infer_ctx **backend_slot,
+                                 const session_stats *stats, const ui *u) {
     while (*line == ' ' || *line == '\t') line++;   /* tolerate leading blanks */
     if (line[0] != '/') return CMD_NOT_A_COMMAND;
 
@@ -447,6 +531,7 @@ static cmd_result handle_command(const char *line, agent_session *s,
             "  /sessions        list saved conversations\n"
             "  /resume <name>   load a saved conversation\n"
             "  /model <path>    load a different GGUF model (keeps the conversation)\n"
+            "  /stats           show session token + throughput stats\n"
             "  /quit, /exit     leave\n"
             "Anything else is sent to the model; use @path to attach a file.\n");
         return CMD_HANDLED;
@@ -477,6 +562,11 @@ static cmd_result handle_command(const char *line, agent_session *s,
 
     if (strcmp(verb, "/undo") == 0) {
         cmd_undo(s, sandbox);
+        return CMD_HANDLED;
+    }
+
+    if (strcmp(verb, "/stats") == 0) {
+        stats_render(u, stats);
         return CMD_HANDLED;
     }
 
@@ -599,6 +689,7 @@ int main(int argc, char **argv) {
     int ctx = 4096;  /* the system prompt + few-shot overhead is ~1.5k tokens; 2048
                         left too little room and long sessions overflowed */
     int want_color = 1;                  /* gated by TTY + platform below; --no-color forces off */
+    int color_force = 0;                 /* --color forces colour even when not a TTY (pipes) */
 
     /* Config file (agent.json / .anachron.json) sets defaults; CLI flags below
      * override them. String values are xstrdup'd so they outlive the parsed JSON. */
@@ -650,6 +741,8 @@ int main(int argc, char **argv) {
             plan_enabled = 0;                 /* re-disable when config set it on */
         } else if (strcmp(a, "--no-color") == 0 || strcmp(a, "--no-colour") == 0) {
             want_color = 0;
+        } else if (strcmp(a, "--color") == 0 || strcmp(a, "--colour") == 0) {
+            color_force = 1;
         } else if (strcmp(a, "--log") == 0 && i + 1 < argc) {
             log_path = argv[++i];
         } else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
@@ -716,9 +809,9 @@ int main(int argc, char **argv) {
      * is available; without it, the structural balance check still runs. */
     const char *verify_cc = verify_writes ? detect_cc() : NULL;
 
-    /* Colour the edit diffs only on an interactive POSIX terminal: the XP console
-     * does not interpret ANSI escapes, so force it off there. */
-    int use_color = want_color && plat_isatty_stdout();
+    /* Colour only on an interactive POSIX terminal (or when --color forces it, e.g.
+     * piping to a colour-aware pager). The XP console does not interpret ANSI, so off. */
+    int use_color = color_force || (want_color && plat_isatty_stdout());
 #ifdef _WIN32
     use_color = 0;
 #endif
@@ -740,7 +833,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    ui u = { stdout, logf };
+    ui u = { stdout, logf, use_color };
     agent_config cfg = {0};
     cfg.infer = backend;
     cfg.grammar = grammar;          /* stub ignores it; llama backend honors it */
@@ -766,6 +859,7 @@ int main(int argc, char **argv) {
 
     agent_session session;
     agent_session_init(&session, &cfg);
+    session_stats stats = {0};
 
     /* Ctrl+C now interrupts the current generation instead of killing the process
      * (a second press still force-quits). */
@@ -778,7 +872,7 @@ int main(int argc, char **argv) {
         double t0 = plat_time_sec();
         interrupt_clear();
         rc = agent_session_run_turn(&session, msg);
-        print_turn_stats(plat_time_sec() - t0, &session);
+        print_turn_stats(&u, plat_time_sec() - t0, &session);
         free(msg);
     } else {
         /* Interactive conversation. Clear any leftover mouse-reporting mode a prior
@@ -795,34 +889,39 @@ int main(int argc, char **argv) {
         }
 #endif
         fprintf(stdout,
-            "ANACHRON " ANACHRON_VERSION " - local agentic coding harness\n"
-            "  backend: %s\n"
-            "  sandbox: %s\n"
-            "  grammar: %s\n"
-            "  verify : %s\n"
-            "  context: %s\n"
-            "  config : %s\n"
+            "%sANACHRON " ANACHRON_VERSION "%s - local agentic coding harness\n"
+            "  %sbackend:%s %s\n"
+            "  %ssandbox:%s %s\n"
+            "  %sgrammar:%s %s\n"
+            "  %sverify :%s %s\n"
+            "  %scontext:%s %s\n"
+            "  %sconfig :%s %s\n"
             "Type a task and press enter (use @path to attach a file). /help for commands.\n",
-            model ? model : "stub (no model)", sandbox,
-            grammar ? grammar_path : "(none)",
+            cc(&u, A_TITLE), cc(&u, A_RESET),
+            cc(&u, A_DIM), cc(&u, A_RESET), model ? model : "stub (no model)",
+            cc(&u, A_DIM), cc(&u, A_RESET), sandbox,
+            cc(&u, A_DIM), cc(&u, A_RESET), grammar ? grammar_path : "(none)",
+            cc(&u, A_DIM), cc(&u, A_RESET),
             !verify_writes ? "off" : (verify_cc ? "on (balance + cc syntax check)" : "on (balance check)"),
-            project_context ? "AGENTS.md loaded" : "(no AGENTS.md)",
-            cfg_path ? cfg_path : "(none)");
+            cc(&u, A_DIM), cc(&u, A_RESET), project_context ? "AGENTS.md loaded" : "(no AGENTS.md)",
+            cc(&u, A_DIM), cc(&u, A_RESET), cfg_path ? cfg_path : "(none)");
         for (;;) {
             plat_flush_input();   /* drop scroll/keystroke bytes from the last turn */
-            fprintf(stdout, "\nyou> ");
+            fprintf(stdout, "\n%syou>%s ", cc(&u, A_PROMPT), cc(&u, A_RESET));
             fflush(stdout);
             if (!read_line(&task)) { fprintf(stdout, "\n"); break; }
             if (task.len == 0) continue;
-            cmd_result cr = handle_command(sb_cstr(&task), &session, sandbox, ctx, &backend);
+            cmd_result cr = handle_command(sb_cstr(&task), &session, sandbox, ctx, &backend, &stats, &u);
             if (cr == CMD_QUIT) break;
             if (cr == CMD_HANDLED) continue;
             char *msg = expand_mentions(sb_cstr(&task), sandbox);
             double t0 = plat_time_sec();
             interrupt_clear();
             rc = agent_session_run_turn(&session, msg);
-            print_turn_stats(plat_time_sec() - t0, &session);
-            if (interrupt_pending()) fprintf(stdout, "(interrupted)\n");
+            double elapsed = plat_time_sec() - t0;
+            stats_record(&stats, &session, elapsed);
+            print_turn_stats(&u, elapsed, &session);
+            if (interrupt_pending()) fprintf(stdout, "%s(interrupted)%s\n", cc(&u, A_NOTE), cc(&u, A_RESET));
             interrupt_clear();
             free(msg);
         }

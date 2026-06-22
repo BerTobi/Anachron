@@ -64,6 +64,21 @@ inference, place a GGUF under `spike-phase0/models/` (e.g.
 build the SSE2-only `llama.cpp` static libs the Makefile links. See `PHASE0-FINDINGS.md`
 and `DEPLOY.md` for the exact spike setup and cross-build details.
 
+The **Hammer** function-calling models that `run.sh` expects are converted from the
+official MadeAgents safetensors with this repo's own llama.cpp (so the GGUF matches the
+linked `libllama`). For example:
+
+```sh
+pip install gguf sentencepiece
+hf download MadeAgents/Hammer2.0-0.5b --local-dir /tmp/h
+python3 spike-phase0/llama.cpp/convert_hf_to_gguf.py /tmp/h --outtype q8_0 \
+    --outfile spike-phase0/models/hammer2.0-0.5b-q8_0.gguf
+```
+
+Use Hammer **2.0** (0.5B/1.5B) for agentic use — it emits ANACHRON's `<tool_call>`
+format reliably. Hammer **2.1** converts fine but is specialized to its own tool schema
+and won't emit our format, so it's not recommended here.
+
 ## Run
 
 ```sh

@@ -7,6 +7,24 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+### Added
+- Colour theme for the interactive REPL: the banner, `you>` prompt, tool-call lines,
+  results/errors, notices, and the `final` header are now coloured (muted ANSI). Auto-on
+  for an interactive terminal, off on Windows; `--color`/`--no-color` force it either way.
+- `/stats` command: session token + throughput stats — turns, total/avg generated tokens,
+  context tokens processed, wall time, tokens/sec, and a per-turn sparkline graph of
+  generated tokens (Unicode blocks with colour, plain numbers without).
+- Hammer 2.0 1.5B model (`--hammer-big`): the 2.0 family's reliable `<tool_call>` with
+  better code than the 0.5B; slower (a cold turn is minutes on CPU).
+- Hammer 2.1 0.5B + 1.5B converted and available (`--hammer21`, `--hammer21-big`).
+
+### Notes
+- Hammer 2.1 does NOT emit ANACHRON's `<tool_call>` format at either size — the newer
+  fine-tune is specialized to its own tool schema and prints code/prose instead. So
+  `--hammer` stays Hammer **2.0** 0.5B (and `--hammer-big` is 2.0 1.5B) for agentic use;
+  the 2.1 builds are kept only for experimentation. Using the 2.1 line would require
+  adapting the harness to Hammer's native tool format.
+
 ## [0.2.1] - 2026-06-22
 
 ### Fixed
