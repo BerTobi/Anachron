@@ -1,0 +1,45 @@
+# ANACHRON tool-call grammar (GBNF, llama.cpp).
+#
+# Constrains the 0.5B model so EVERY decoded turn is a single, parseable tool
+# call with the correct argument keys for the chosen tool. Each alternative fully
+# specifies one tool's arguments, so the grammar enforces not just "valid JSON"
+# but "valid call to a known tool" — the strongest guard for a model this small.
+#
+# Note llama.cpp GBNF style: alternation '|' goes at the END of a line (a
+# line-leading '|' is rejected), and alternatives are wrapped in ( ... ).
+
+root ::= "<tool_call>" ws "{" ws "\"name\":" ws call ws "}" ws "</tool_call>"
+
+call ::=
+    ( "\"read_file\""   ws "," ws args-read ) |
+    ( "\"write_file\""  ws "," ws args-path-content ) |
+    ( "\"list_dir\""    ws "," ws args-path ) |
+    ( "\"run_command\"" ws "," ws args-cmd ) |
+    ( "\"edit\""        ws "," ws args-edit ) |
+    ( "\"search\""      ws "," ws args-search ) |
+    ( "\"glob\""        ws "," ws args-glob ) |
+    ( "\"final\""       ws "," ws args-message )
+
+args-path         ::= "\"arguments\":" ws "{" ws kv-path ws "}"
+args-read         ::= "\"arguments\":" ws "{" ws kv-path ( ws "," ws kv-offset )? ws "}"
+args-path-content ::= "\"arguments\":" ws "{" ws kv-path ws "," ws kv-content ws "}"
+args-cmd          ::= "\"arguments\":" ws "{" ws kv-cmd ws "}"
+args-edit         ::= "\"arguments\":" ws "{" ws kv-path ws "," ws kv-old ws "," ws kv-new ws "}"
+args-search       ::= "\"arguments\":" ws "{" ws kv-pattern ( ws "," ws kv-path )? ws "}"
+args-glob         ::= "\"arguments\":" ws "{" ws kv-pattern ws "}"
+args-message      ::= "\"arguments\":" ws "{" ws kv-message ws "}"
+
+kv-path    ::= "\"path\":"    ws string
+kv-content ::= "\"content\":" ws string
+kv-cmd     ::= "\"cmd\":"     ws string
+kv-old     ::= "\"old\":"     ws string
+kv-new     ::= "\"new\":"     ws string
+kv-pattern ::= "\"pattern\":" ws string
+kv-message ::= "\"message\":" ws string
+kv-offset  ::= "\"offset\":" ws number
+number     ::= "-"? [0-9]+
+
+string ::= "\"" char* "\""
+char   ::= [^"\\] | "\\" ( ["\\/bfnrt] | "u" hex hex hex hex )
+hex    ::= [0-9a-fA-F]
+ws     ::= [ \t\n]*

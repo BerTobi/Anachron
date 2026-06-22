@@ -1,0 +1,5 @@
+# Build artifacts and logs are not source — the agent's search/glob skip these.
+*.log
+*.o
+build/
+demo

@@ -1,0 +1,95 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index eb8341c..1e7d784 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -417,20 +417,76 @@ typedef pthread_t          ggml_thread_t;
+ 
+ #if defined(_WIN32)
+ 
+-typedef CONDITION_VARIABLE ggml_cond_t;
+-typedef SRWLOCK            ggml_mutex_t;
+-
+-#define ggml_mutex_init(m)   InitializeSRWLock(m)
+-#define ggml_mutex_destroy(m)
+-#define ggml_mutex_lock(m)   AcquireSRWLockExclusive(m)
+-#define ggml_mutex_unlock(m) ReleaseSRWLockExclusive(m)
+-#define ggml_mutex_lock_shared(m)   AcquireSRWLockShared(m)
+-#define ggml_mutex_unlock_shared(m) ReleaseSRWLockShared(m)
+-
+-#define ggml_cond_init(c)    InitializeConditionVariable(c)
+-#define ggml_cond_destroy(c)
+-#define ggml_cond_wait(c, m) SleepConditionVariableSRW(c, m, INFINITE, CONDITION_VARIABLE_LOCKMODE_SHARED)
+-#define ggml_cond_broadcast(c) WakeAllConditionVariable(c)
++// ---- ANACHRON XP patch -------------------------------------------------
++// Upstream uses SRWLOCK + CONDITION_VARIABLE (Windows Vista+), which violates
++// the Windows XP API ceiling. Replace with XP-safe CRITICAL_SECTION + a
++// manual-reset-Event broadcast condition variable. Single-threaded runs never
++// hit cond_wait (no secondary threads); the impl below is also correct for the
++// serialized-broadcast pattern used by the threadpool when n_threads > 1.
++typedef CRITICAL_SECTION ggml_mutex_t;
++
++#define ggml_mutex_init(m)          InitializeCriticalSection(m)
++#define ggml_mutex_destroy(m)       DeleteCriticalSection(m)
++#define ggml_mutex_lock(m)          EnterCriticalSection(m)
++#define ggml_mutex_unlock(m)        LeaveCriticalSection(m)
++#define ggml_mutex_lock_shared(m)   EnterCriticalSection(m)
++#define ggml_mutex_unlock_shared(m) LeaveCriticalSection(m)
++
++typedef struct {
++    CRITICAL_SECTION lock;
++    HANDLE           event;       // manual-reset
++    unsigned         waiters;     // threads parked since the last broadcast
++    unsigned         to_wake;     // threads still to observe the current broadcast
++    unsigned         generation;  // bumped on each broadcast
++} ggml_cond_t;
++
++static void ggml_cond_init(ggml_cond_t * c) {
++    InitializeCriticalSection(&c->lock);
++    c->event      = CreateEvent(NULL, TRUE /*manual reset*/, FALSE, NULL);
++    c->waiters    = 0;
++    c->to_wake    = 0;
++    c->generation = 0;
++}
++
++static void ggml_cond_destroy(ggml_cond_t * c) {
++    if (c->event) { CloseHandle(c->event); c->event = NULL; }
++    DeleteCriticalSection(&c->lock);
++}
++
++// Atomically releases m, blocks until a broadcast, then re-acquires m.
++static void ggml_cond_wait(ggml_cond_t * c, ggml_mutex_t * m) {
++    EnterCriticalSection(&c->lock);
++    c->waiters++;
++    unsigned my_gen = c->generation;
++    LeaveCriticalSection(&c->lock);
++
++    LeaveCriticalSection(m);
++    for (;;) {
++        WaitForSingleObject(c->event, INFINITE);
++        EnterCriticalSection(&c->lock);
++        int woken = (c->generation != my_gen);
++        if (woken && c->to_wake > 0 && --c->to_wake == 0) {
++            ResetEvent(c->event);
++        }
++        LeaveCriticalSection(&c->lock);
++        if (woken) {
++            break;
++        }
++    }
++    EnterCriticalSection(m);
++}
++
++static void ggml_cond_broadcast(ggml_cond_t * c) {
++    EnterCriticalSection(&c->lock);
++    if (c->waiters > 0) {
++        c->generation++;
++        c->to_wake += c->waiters;
++        c->waiters  = 0;
++        SetEvent(c->event);
++    }
++    LeaveCriticalSection(&c->lock);
++}
++// ---- end ANACHRON XP patch ---------------------------------------------
+ 
+ #define ggml_thread_create pthread_create
+ #define ggml_thread_join   pthread_join

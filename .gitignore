@@ -1,0 +1,32 @@
+# --- Compiled binaries (top-level build outputs) ---
+/anachron
+/anachron-llama
+/anachron-llama-antix
+/anachron-remote
+/anachron-test
+/anachron.exe
+
+# --- Object files & build directories ---
+*.o
+*.a
+build-obj/
+build-antix-m32/
+build-xp/
+dist/
+
+# --- Model weights: multi-GB third-party files; fetch separately (see README) ---
+*.gguf
+spike-phase0/models/
+
+# --- Vendored llama.cpp clone & its build output (clone separately; see README) ---
+spike-phase0/llama.cpp/
+
+# --- Live agent sandbox & runtime artifacts (the demo lives in examples/) ---
+/workspace/
+*.anbak
+.anachron-sessions/
+
+# --- Editor / OS noise ---
+*.swp
+*~
+.DS_Store

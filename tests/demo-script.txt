@@ -1,0 +1,9 @@
+<tool_call>{"name": "list_dir", "arguments": {"path": "."}}</tool_call>
+===
+<tool_call>{"name": "write_file", "arguments": {"path": "hello.txt", "content": "hello from anachron\nline two\n"}}</tool_call>
+===
+<tool_call>{"name": "read_file", "arguments": {"path": "hello.txt"}}</tool_call>
+===
+<tool_call>{"name": "run_command", "arguments": {"cmd": "echo ran in sandbox && ls"}}</tool_call>
+===
+<tool_call>{"name": "final", "arguments": {"message": "Created hello.txt, read it back, and listed the directory."}}</tool_call>
