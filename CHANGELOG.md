@@ -7,6 +7,13 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+### Changed
+- Creating code now saves to a file by default. "write/create/make a program, script,
+  function, or file" writes it (to a sensibly-inferred filename) in one step and
+  confirms, instead of printing the code and waiting to be told to save — which avoids
+  the unreliable re-emit round-trip on small models. "show me", "explain", and questions
+  still answer in plain text. Implemented via the system-prompt rule + few-shot.
+
 ### Fixed
 - Banner no longer draws over previous terminal output: stopped emitting `ESC[?1049l`
   (leave-alternate-screen) on startup, which made some terminals restore a stale cursor.

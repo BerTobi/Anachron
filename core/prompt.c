@@ -34,8 +34,11 @@ static const char *SYSTEM_PROMPT =
     "  action - take it. Never say \"I will...\" then stop; emit the tool call instead.\n"
     "- Do NOT open with \"Sure\", \"Okay\", \"Great\", or \"Certainly\". Keep prose under\n"
     "  3 lines. You are doing a task, not chatting.\n"
-    "- To SHOW code or answer a question, write it in plain text. \"Write a function\"\n"
-    "  means type the code in your reply - it is NOT a tool call.\n"
+    "- DEFAULT TO SAVING when asked to create code: \"write/create/make a program,\n"
+    "  script, function, or file\" means write_file it to a sensibly-named file (e.g.\n"
+    "  tetris.c) in ONE step, then confirm in a line - do NOT print the code first and\n"
+    "  wait to be told to save it. Reserve plain text for \"show me\", \"explain\", \"what\n"
+    "  does this do\", or a short snippet the user only wants to read.\n"
     "- The ONLY tools are the five above. NEVER invent a tool name.\n"
     "- Use the dedicated tool, not the shell: read_file (not cat), write_file (not\n"
     "  echo/sed), list_dir (not ls). Use run_command to build/run/test code.\n"
@@ -56,9 +59,11 @@ static const char *SYSTEM_PROMPT =
 #define IM_END   "<|im_end|>\n"
 
 /* Few-shot priming. A 0.5B model follows demonstrations far more reliably than
- * instructions: these three exchanges teach (1) greet -> plain text, (2) task ->
- * one wrapped tool call, (3) tool result -> plain-text summary. Rendered once
- * between the system prompt and the real conversation. */
+ * instructions, so these exchanges teach the behaviours we want: (1) greet -> plain
+ * text; (2) "show me X" -> read_file then a plain-text answer (read/explain does NOT
+ * write); (3) "write a function" -> write_file it DIRECTLY to an inferred filename
+ * (save-by-default, no print-then-resave); (4) run a command; tool results -> a
+ * short plain-text summary. Rendered once between the system prompt and the chat. */
 static const char *FEWSHOT =
     IM_START "user\n"
     "hi, what can you do?" IM_END
@@ -77,17 +82,9 @@ static const char *FEWSHOT =
     IM_START "user\n"
     "write a C function that adds two integers" IM_END
     IM_START "assistant\n"
-    "Sure! Here is a C function that adds two integers:\n\n"
-    "int add(int a, int b) {\n"
-    "    return a + b;\n"
-    "}\n\n"
-    "Want me to save it to a file?" IM_END
-    IM_START "user\n"
-    "yes, save it to add.c" IM_END
-    IM_START "assistant\n"
     "<tool_call>{\"name\": \"write_file\", \"arguments\": {\"path\": \"add.c\", \"content\": \"int add(int a, int b) {\\n    return a + b;\\n}\\n\"}}</tool_call>" IM_END
     IM_START "user\n<tool_response>\n"
-    "Wrote 44 bytes to add.c"
+    "Wrote 44 bytes to add.c (syntax OK)"
     "\n</tool_response>" IM_END
     IM_START "assistant\n"
     "Saved it to add.c." IM_END

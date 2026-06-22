@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #ifndef _WIN32
 #include <termios.h>   /* raw-mode line editing on a POSIX terminal */
 #include <unistd.h>
@@ -659,6 +660,34 @@ int main(int argc, char **argv) {
             return 0;
         } else if (strcmp(a, "-V") == 0 || strcmp(a, "--version") == 0) {
             fprintf(stdout, "anachron %s\n", ANACHRON_VERSION);
+            sb_free(&task);
+            free(owned_model); free(owned_sandbox);
+            free(owned_grammar); free(owned_log);
+            return 0;
+        } else if (strcmp(a, "--tty-diag") == 0) {
+            /* Diagnose why the raw-mode line editor may not be engaging. */
+#ifndef _WIN32
+            fprintf(stdout, "isatty(stdin)=%d isatty(stdout)=%d\n",
+                    isatty(STDIN_FILENO), isatty(STDOUT_FILENO));
+            struct termios o, r, chk;
+            int g = tcgetattr(STDIN_FILENO, &o);
+            fprintf(stdout, "tcgetattr=%d (errno=%d)\n", g, g ? errno : 0);
+            if (g == 0) {
+                r = o;
+                r.c_lflag &= ~((tcflag_t)(ICANON | ECHO | ISIG));
+                r.c_cc[VMIN] = 1; r.c_cc[VTIME] = 0;
+                int s = tcsetattr(STDIN_FILENO, TCSANOW, &r);
+                int rc = errno;
+                tcgetattr(STDIN_FILENO, &chk);
+                fprintf(stdout, "tcsetattr(raw)=%d (errno=%d) -> after: ICANON=%d ECHO=%d ISIG=%d\n",
+                        s, s ? rc : 0,
+                        (chk.c_lflag & ICANON) != 0, (chk.c_lflag & ECHO) != 0,
+                        (chk.c_lflag & ISIG) != 0);
+                tcsetattr(STDIN_FILENO, TCSANOW, &o);  /* restore */
+            }
+#else
+            fprintf(stdout, "tty-diag: not applicable on this build\n");
+#endif
             sb_free(&task);
             free(owned_model); free(owned_sandbox);
             free(owned_grammar); free(owned_log);
