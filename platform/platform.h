@@ -27,6 +27,10 @@ void plat_dirlist_free(plat_dirlist *dl);
 /* Create a directory. Returns 0 on success OR if it already exists, non-zero else. */
 int  plat_mkdir(const char *path);
 
+/* Last-modified time of `path` in seconds since the epoch, or -1 if it does not
+ * exist. Only used for relative comparisons (is a source newer than its binary?). */
+long plat_mtime(const char *path);
+
 /* 1 if standard output is an interactive terminal, else 0 (drives colour output). */
 int  plat_isatty_stdout(void);
 

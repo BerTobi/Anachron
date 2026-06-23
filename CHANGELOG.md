@@ -7,6 +7,13 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+### Fixed
+- `run_command` now warns when you run a stale build: if a command runs `./NAME` and its
+  source (`NAME.c`/`NAME.cpp`) is newer than the binary — or the binary doesn't exist —
+  the observation hints to recompile first (with the exact `cc NAME.c -o NAME` command).
+  This catches the "edited the source, ran the old binary, got unchanged output" trap.
+  New `plat_mtime` platform primitive backs the check.
+
 ## [0.3.0] - 2026-06-22
 
 ### Added

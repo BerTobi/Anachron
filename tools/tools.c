@@ -252,6 +252,43 @@ static char *do_list_dir(const tool_ctx *ctx, const char *rel, int *ok) {
     return r;
 }
 
+/* If `cmd` runs a local executable `./NAME` whose C/C++ source (NAME.c / NAME.cpp) is
+ * newer than the binary — or the binary doesn't exist yet — fill *src (the source
+ * filename) and *bin (NAME) and return 1. This catches the "edited the source then ran
+ * the stale binary" trap: the run silently uses the old build. */
+static int run_uses_stale_build(const tool_ctx *ctx, const char *cmd,
+                                strbuf *src, strbuf *bin) {
+    const char *p = cmd, *last = NULL;
+    while ((p = strstr(p, "./")) != NULL) { last = p + 2; p += 2; }  /* last ./NAME */
+    if (!last) return 0;
+    char name[256]; size_t n = 0;
+    for (const char *q = last; *q && n < sizeof name - 1; q++) {
+        char c = *q;
+        if (c == ' ' || c == '\t' || c == '&' || c == '|' || c == ';' ||
+            c == '>' || c == '<' || c == '\n' || c == '"' || c == '\'') break;
+        name[n++] = c;
+    }
+    name[n] = '\0';
+    if (n == 0 || strchr(name, '.')) return 0;   /* ./prog is a binary; ./x.c is not */
+
+    char *babs = NULL, *cabs = NULL, *ccabs = NULL;
+    if (sandbox_resolve(ctx->sandbox_root, name, &babs) != 0) return 0;
+    strbuf cs;  sb_init(&cs);  sb_appendf(&cs,  "%s.c",   name);
+    strbuf ccs; sb_init(&ccs); sb_appendf(&ccs, "%s.cpp", name);
+    sandbox_resolve(ctx->sandbox_root, sb_cstr(&cs),  &cabs);
+    sandbox_resolve(ctx->sandbox_root, sb_cstr(&ccs), &ccabs);
+    long bm = plat_mtime(babs);
+    long cm  = cabs  ? plat_mtime(cabs)  : -1;
+    long ccm = ccabs ? plat_mtime(ccabs) : -1;
+    int stale = 0;
+    if (cm >= 0 && (bm < 0 || cm > bm)) { stale = 1; sb_clear(src); sb_append(src, sb_cstr(&cs)); }
+    else if (ccm >= 0 && (bm < 0 || ccm > bm)) { stale = 1; sb_clear(src); sb_append(src, sb_cstr(&ccs)); }
+    if (stale) { sb_clear(bin); sb_append(bin, name); }
+    free(babs); free(cabs); free(ccabs);
+    sb_free(&cs); sb_free(&ccs);
+    return stale;
+}
+
 static char *do_run_command(const tool_ctx *ctx, const char *cmd, int *ok) {
     char *out = NULL; size_t len = 0; int code = -1;
     int rc = plat_run_command(cmd, ctx->sandbox_root, &out, &len, &code);
@@ -259,23 +296,37 @@ static char *do_run_command(const tool_ctx *ctx, const char *cmd, int *ok) {
         free(out);
         return err_obs("ERROR: could not launch command \"%s\"", cmd, ok);
     }
-    /* Very common self-inflicted failure on small models: compiling/running a file
-     * that was never written (e.g. `gcc foo.c` before foo.c exists). Detect it and
-     * steer the model to write_file first — a fresh in-loop hint lands far better on
-     * a 0.5B than a system-prompt rule it has already ignored. */
+    /* Two common self-inflicted failures on small models, each with a targeted hint:
+     * (a) running a binary whose source was edited (stale build), and (b) compiling/
+     * running a file that was never written. A fresh in-loop hint steers a small model
+     * far better than a system-prompt rule it has already ignored. */
+    strbuf stale_src; sb_init(&stale_src);
+    strbuf stale_bin; sb_init(&stale_bin);
+    int stale = run_uses_stale_build(ctx, cmd, &stale_src, &stale_bin);
     int missing_file = (code != 0 && out &&
                         strstr(out, "No such file or directory") != NULL);
+
     strbuf sb; sb_init(&sb);
     sb_appendf(&sb, "exit code %d\n", code);
     if (!out || len == 0)
         sb_append(&sb, "(command produced no output)"); /* clearer than an empty result */
     else
         append_capped(&sb, out, len);
-    if (missing_file)
+    if (stale) {
+        const char *cxx = strstr(sb_cstr(&stale_src), ".cpp") ? "c++" : "cc";
+        sb_appendf(&sb, "\nHINT: %s is newer than the ./%s binary (or it isn't built yet) "
+                        "- this ran the OLD build, so your latest edits are NOT reflected. "
+                        "Recompile first: `%s %s -o %s`, then run ./%s again.",
+                   sb_cstr(&stale_src), sb_cstr(&stale_bin), cxx,
+                   sb_cstr(&stale_src), sb_cstr(&stale_bin), sb_cstr(&stale_bin));
+    } else if (missing_file) {
         sb_append(&sb, "\nHINT: a file in that command does not exist yet. Create it "
                        "with write_file FIRST, then run the command. Never compile or "
                        "run a file you have not written.");
+    }
     free(out);
+    sb_free(&stale_src);
+    sb_free(&stale_bin);
     *ok = (code == 0);
     char *r = dup_cstr(sb_cstr(&sb));
     sb_free(&sb);

@@ -103,6 +103,12 @@ int plat_mkdir(const char *path) {
     return -1;
 }
 
+long plat_mtime(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return (long)st.st_mtime;
+}
+
 int plat_run_command(const char *cmd, const char *cwd,
                      char **out, size_t *out_len, int *exit_code) {
     char saved[4096];

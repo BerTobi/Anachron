@@ -104,6 +104,15 @@ int plat_mkdir(const char *path) {
     return -1;
 }
 
+long plat_mtime(const char *path) {
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fad)) return -1;
+    /* FILETIME is 100ns ticks since 1601; convert to unix seconds for comparison. */
+    unsigned long long t = ((unsigned long long)fad.ftLastWriteTime.dwHighDateTime << 32)
+                         | fad.ftLastWriteTime.dwLowDateTime;
+    return (long)(t / 10000000ULL - 11644473600ULL);
+}
+
 int plat_run_command(const char *cmd, const char *cwd,
                      char **out, size_t *out_len, int *exit_code) {
     char saved[MAX_PATH];
