@@ -93,3 +93,58 @@ char *verify_balance(const char *code) {
     if (brack)         return dupf("unbalanced brackets: %d unclosed '['", brack);
     return NULL;
 }
+
+char *verify_repair_literals(const char *code, int *n_fixed) {
+    /* The single most common weak-model code defect: emitting a real newline INSIDE
+     * a string or char literal where the source meant "\n" (e.g. printf("Too low!\n")
+     * comes out as printf("Too low!<newline>")). A raw newline inside a C literal is
+     * ALWAYS a syntax error, so escaping it to \n is provably safe: valid code has
+     * none to touch, broken code is the only thing that changes. We reuse the same
+     * literal/comment state machine as verify_balance so structure is preserved
+     * exactly; only newlines (and CRs) found inside a literal are escaped. */
+    int fixed = 0;
+    size_t len = strlen(code);
+    char *out = malloc(len * 2 + 1);   /* worst case: every byte is a 1->2 escape */
+    if (!out) { if (n_fixed) *n_fixed = 0; return NULL; }
+    char *o = out;
+    enum { NORMAL, STR, CH, LINE_C, BLOCK_C } st = NORMAL;
+
+    for (const char *p = code; *p; p++) {
+        char c = *p;
+        switch (st) {
+            case NORMAL:
+                if (c == '"')                       st = STR;
+                else if (c == '\'')                 st = CH;
+                else if (c == '/' && p[1] == '/') { *o++ = c; c = *++p; st = LINE_C; }
+                else if (c == '/' && p[1] == '*') { *o++ = c; c = *++p; st = BLOCK_C; }
+                *o++ = c;
+                break;
+            case STR:
+            case CH:
+                if (c == '\\' && p[1]) {            /* keep escapes (incl. \<newline>) verbatim */
+                    *o++ = c; *o++ = *++p;
+                } else if (c == '\n') {             /* raw newline in a literal -> escape it */
+                    *o++ = '\\'; *o++ = 'n'; fixed++;
+                } else if (c == '\r') {
+                    *o++ = '\\'; *o++ = 'r'; fixed++;
+                } else {
+                    if (c == '"' && st == STR)        st = NORMAL;
+                    else if (c == '\'' && st == CH)   st = NORMAL;
+                    *o++ = c;
+                }
+                break;
+            case LINE_C:
+                if (c == '\n') st = NORMAL;
+                *o++ = c;
+                break;
+            case BLOCK_C:
+                if (c == '*' && p[1] == '/') { *o++ = c; c = *++p; st = NORMAL; }
+                *o++ = c;
+                break;
+        }
+    }
+    *o = '\0';
+    if (n_fixed) *n_fixed = fixed;
+    if (fixed == 0) { free(out); return NULL; }   /* nothing to repair */
+    return out;
+}

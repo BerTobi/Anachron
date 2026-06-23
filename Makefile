@@ -75,7 +75,7 @@ LL_CSRC_WIN = $(CORE) $(TOOLS) platform/platform_win32.c $(MAIN)
 
 REMOTE_SRC = $(CORE) $(TOOLS) infer/infer_remote.c platform/platform_posix.c $(MAIN)
 
-.PHONY: all test e2e verify-e2e win llama antix xp remote clean
+.PHONY: all test e2e verify-e2e noop-e2e repair-e2e recover-e2e win llama antix xp remote clean
 
 all: anachron
 
@@ -95,6 +95,21 @@ e2e: anachron
 # must be rejected and reverted; a good write kept.
 verify-e2e: anachron
 	sh tests/verify-e2e.sh
+
+# No-progress guard end-to-end (stub backend, deterministic): re-saving identical
+# content must be flagged NO CHANGE rather than reported as a successful write.
+noop-e2e: anachron
+	sh tests/noop-e2e.sh
+
+# Literal auto-repair end-to-end (stub backend): a raw newline inside a C string
+# literal must be escaped to \n and the write accepted, not rejected.
+repair-e2e: anachron
+	sh tests/repair-e2e.sh
+
+# Recovery guard end-to-end (stub backend): a false "I fixed it" after a rejected
+# write must be nudged, not allowed to end the turn, so the corrected write lands.
+recover-e2e: anachron
+	sh tests/recover-e2e.sh
 
 # XP-safe cross build: subsystem 5.01, static, API ceiling pinned to XP SP3.
 win: anachron.exe

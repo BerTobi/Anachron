@@ -1,0 +1,5 @@
+<tool_call>{"name": "write_file", "arguments": {"path": "prog.c", "content": "int main(void) {\n    return 0;\n}\n"}}</tool_call>
+===
+<tool_call>{"name": "write_file", "arguments": {"path": "prog.c", "content": "int main(void) {\n    return 0;\n}\n"}}</tool_call>
+===
+<tool_call>{"name": "final", "arguments": {"message": "done"}}</tool_call>

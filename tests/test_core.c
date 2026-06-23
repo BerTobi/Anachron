@@ -149,6 +149,41 @@ static void test_verify(void) {
     printf("  verify: ok\n");
 }
 
+static void test_repair(void) {
+    int n; char *r;
+
+    /* raw newline inside a string literal -> escaped to \n; result is sound C */
+    r = verify_repair_literals("printf(\"Too low!\n\");\n", &n);
+    assert(r != NULL && n == 1);
+    assert(strstr(r, "\"Too low!\\n\"") != NULL);   /* literal closes on its own line */
+    assert(verify_balance(r) == NULL);              /* and the structure is valid */
+    free(r);
+
+    /* clean code with no in-literal newlines -> NULL (nothing to repair) */
+    r = verify_repair_literals("int main(void) {\n    return 0;\n}\n", &n);
+    assert(r == NULL && n == 0);
+
+    /* an already-escaped \n must be left alone (no false positive) */
+    r = verify_repair_literals("puts(\"hi\\n\");\n", &n);
+    assert(r == NULL && n == 0);
+
+    /* char literal holding a raw newline -> escaped */
+    r = verify_repair_literals("char c = '\n';\n", &n);
+    assert(r != NULL && n == 1 && strstr(r, "'\\n'") != NULL);
+    free(r);
+
+    /* a real newline in a // comment is not inside a literal -> untouched */
+    r = verify_repair_literals("// hi\nint x;\n", &n);
+    assert(r == NULL && n == 0);
+
+    /* several newlines in one string -> each escaped */
+    r = verify_repair_literals("\"a\nb\nc\"", &n);
+    assert(r != NULL && n == 2 && strcmp(r, "\"a\\nb\\nc\"") == 0);
+    free(r);
+
+    printf("  repair: ok\n");
+}
+
 static void test_obsfmt(void) {
     char *r;
 
@@ -367,6 +402,7 @@ int main(void) {
     test_toolcall();
     test_sandbox();
     test_verify();
+    test_repair();
     test_obsfmt();
     test_edit();
     test_glob();

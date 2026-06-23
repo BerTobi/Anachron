@@ -71,6 +71,15 @@ static int has_action_intent(const char *s) {
     return 0;
 }
 
+/* Re-prompt used by the recovery guard: a write/edit didn't land (it was rejected,
+ * or it changed nothing) and the model is trying to end the turn anyway - typically
+ * by narrating a false "I fixed it". Push it to actually emit the corrected write. */
+static const char RECOVER_MSG[] =
+    "Your last write did not take effect (it was rejected, or it changed nothing), so "
+    "the requested change is NOT saved. Do not claim it is done - emit a write_file "
+    "tool call NOW with the corrected, COMPLETE file content. Use \\n inside C strings, "
+    "never a real line break.";
+
 void agent_session_init(agent_session *s, const agent_config *cfg) {
     s->cfg = *cfg;
     history_init(&s->h);
@@ -185,6 +194,7 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
 
     int finished = 0;
     int force_nudges = 0;          /* times we've nudged a stalled reply forward */
+    int pending_unsaved = 0;       /* last write/edit didn't land (rejected or no-op), not yet re-saved */
     int repeat = 0;                /* consecutive identical tool calls */
     int replan_count = 0;          /* redundant plan re-calls (loop guard; --plan only) */
     char *active_plan = NULL;      /* the model's checklist for a multi-step task (--plan only) */
@@ -264,16 +274,25 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
              * than ending the turn. Bounded (higher with a plan) so a model that is
              * genuinely just talking still gets to finish. */
             int plan_open = (active_plan != NULL);
-            if ((plan_open || has_action_intent(out)) && force_nudges < (plan_open ? 4 : 2)) {
+            int nudge_cap = plan_open ? 4 : (pending_unsaved ? 3 : 2);
+            if ((plan_open || pending_unsaved || has_action_intent(out)) && force_nudges < nudge_cap) {
                 force_nudges++;
-                NOTICE(cfg, plan_open ? "stopped mid-plan; nudging to continue"
-                                      : "described an action without taking it; nudging to act");
-                history_push(h, MSG_USER, plan_open
-                    ? "You have a plan in progress and have not finished it. Take the NEXT "
-                      "step now (emit the tool call), or call final only if every step is done."
-                    : "You described an action but did not take it. If you intend to act, "
-                      "emit the tool call NOW - do not describe it. If you were only "
-                      "answering, ignore this.");
+                const char *why, *msg;
+                if (pending_unsaved) {        /* a write didn't land but the model is wrapping up */
+                    why = "claimed completion while the file is unsaved; nudging to write it";
+                    msg = RECOVER_MSG;
+                } else if (plan_open) {
+                    why = "stopped mid-plan; nudging to continue";
+                    msg = "You have a plan in progress and have not finished it. Take the NEXT "
+                          "step now (emit the tool call), or call final only if every step is done.";
+                } else {
+                    why = "described an action without taking it; nudging to act";
+                    msg = "You described an action but did not take it. If you intend to act, "
+                          "emit the tool call NOW - do not describe it. If you were only "
+                          "answering, ignore this.";
+                }
+                NOTICE(cfg, why);
+                history_push(h, MSG_USER, msg);
                 toolcall_free(&call);
                 sb_free(&acc);
                 continue;
@@ -359,6 +378,12 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
             free(s->last_write);
             s->last_write = xstrdup(call.path);
         }
+        /* Recovery-guard signal: a write/edit that returned ok==0 (rejected by the
+         * verify-on-write check, or a no-op) leaves the requested change unsaved. The
+         * turn-end guard uses this to stop a false "I fixed it" from ending the turn;
+         * a successful write/edit clears it. */
+        if (call.kind == TC_WRITE_FILE || call.kind == TC_EDIT)
+            pending_unsaved = !ok;
         free(obs);
         toolcall_free(&call);
     }

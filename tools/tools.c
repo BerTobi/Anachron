@@ -140,8 +140,39 @@ static char *commit_write(const tool_ctx *ctx, const char *rel, const char *cont
     int existed = (plat_read_file(abs, &prior, &prior_len) == 0);
 
     size_t len = strlen(content);
+
+    /* Auto-repair the most common weak-model defect before anything else: a raw
+     * newline emitted INSIDE a string/char literal where "\n" was meant (a
+     * guaranteed C syntax error). Safe by construction - valid code has none to
+     * touch - so this only ever rescues a broken write. Done before the no-op
+     * check so it compares what will actually be written. Brace languages only;
+     * prose/data files are left untouched. */
+    char *repaired = NULL; int n_fixed = 0;
+    if (verify_is_codeish(rel)) {
+        repaired = verify_repair_literals(content, &n_fixed);
+        if (repaired) { content = repaired; len = strlen(content); }
+    }
+
+    /* No-progress guard: the file already holds byte-identical content. This is the
+     * weak-model failure mode of "told the result is wrong -> re-saves the same stub
+     * -> claims it's done". Don't rewrite or diff; report plainly that nothing changed
+     * so the loop can't mistake a no-op for progress. Cross-turn by construction: the
+     * in-turn repeat guard resets each turn, but disk state persists across turns. */
+    if (existed && len == prior_len && memcmp(content, prior, len) == 0) {
+        free(repaired); free(prior); free(abs);
+        *ok = 0;
+        strbuf sb; sb_init(&sb);
+        sb_appendf(&sb, "NO CHANGE: %s already contained exactly this content - nothing was "
+                        "written, so the file is unchanged. If you were asked to fix, improve, "
+                        "or add to it, you must actually modify the code (write the missing "
+                        "functionality) rather than re-saving the same bytes.", rel);
+        char *r = dup_cstr(sb_cstr(&sb));
+        sb_free(&sb);
+        return r;
+    }
+
     if (plat_write_file(abs, content, len) != 0) {
-        free(prior); free(abs);
+        free(repaired); free(prior); free(abs);
         return err_obs("ERROR: could not write \"%s\"", rel, ok);
     }
 
@@ -155,7 +186,7 @@ static char *commit_write(const tool_ctx *ctx, const char *rel, const char *cont
                 : "WARNING: revert failed - the file may hold the rejected content";
         else
             revert_note = (remove(abs) == 0) ? "not created" : "WARNING: cleanup failed";
-        free(prior); free(abs);
+        free(repaired); free(prior); free(abs);
         *ok = 0;
         strbuf sb; sb_init(&sb);
         sb_appendf(&sb, "ERROR: %s to %s REJECTED - %s\nThe file was left unchanged (%s). "
@@ -179,6 +210,10 @@ static char *commit_write(const tool_ctx *ctx, const char *rel, const char *cont
     *ok = 1;
     strbuf sb; sb_init(&sb);
     sb_appendf(&sb, "%s %zu bytes to %s%s", verb, len, rel, checked ? " (syntax OK)" : "");
+    if (n_fixed > 0)
+        sb_appendf(&sb, " [auto-escaped %d raw newline(s) inside string/char literals - "
+                        "write \\n inside C strings, not a real line break]", n_fixed);
+    free(repaired);
     char *r = dup_cstr(sb_cstr(&sb));
     sb_free(&sb);
     return r;

@@ -7,6 +7,32 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-23
+
+### Added
+- No-progress guard: a `write_file`/`edit` whose content is byte-identical to what's
+  already on disk is reported as `NO CHANGE` (with the change marked unsuccessful)
+  instead of a successful "Wrote N bytes", so the loop can't mistake a re-saved stub
+  for progress. This catches the weak-model trap of "told it's wrong → re-saves the
+  same bytes → claims done". Cross-turn by construction (compares disk state), where
+  the in-turn repeat guard resets each turn. Covered by `make noop-e2e`.
+- Auto-repair of raw newlines inside C string/char literals: the most common
+  weak-model defect (emitting a real line break where `\n` was meant, e.g.
+  `printf("Too low!⏎")`) is now escaped to `\n` just before the syntax check, and the
+  write is accepted with a note. Provably safe — valid code has no raw newlines inside
+  a literal, so the repair only ever rescues a broken write. New `verify_repair_literals`
+  reuses the `verify_balance` literal scanner; covered by unit tests + `make repair-e2e`.
+- Recovery guard: when a write/edit didn't land (rejected by verify-on-write, or a
+  no-op) and the model then tries to end the turn on plain text — typically a false
+  "I fixed it, it works now" with no tool call — the loop re-prompts it to emit the
+  corrected write rather than ending with nothing saved. Covered by `make recover-e2e`.
+
+### Notes
+- These three address a failure observed with both Hammer and Qwen-Coder: the model
+  genuinely attempts real code (Qwen wrote a full number-guessing game) but lost the
+  work to a `\n`-in-literal syntax error and then falsely claimed it had fixed it.
+  Auto-repair fixes the defect; the recovery guard catches whatever still slips through.
+
 ## [0.4.0] - 2026-06-23
 
 ### Added
@@ -140,7 +166,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/BerTobi/Anachron/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/BerTobi/Anachron/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/BerTobi/Anachron/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/BerTobi/Anachron/compare/v0.2.1...v0.3.0
