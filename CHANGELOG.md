@@ -7,6 +7,13 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+### Fixed
+- Build: the antiX (`antix`) and Windows XP (`xp`) cross targets now depend on the
+  project headers, so a `core/version.h` bump (or any header edit) rebuilds them
+  instead of leaving a stale cross binary. The native targets already had this; the
+  cross targets were missed — which is why a freshly-bumped antiX bundle could still
+  report the previous version.
+
 ## [0.4.2] - 2026-06-23
 
 ### Added

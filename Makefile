@@ -139,7 +139,7 @@ anachron-llama: $(LL_CSRC) infer/infer_llama.cpp $(HEADERS)
 # plus its runtime .so's, found via an $ORIGIN rpath. Copy the whole dist/antix/
 # folder to an antiX box (with a GGUF model) and run it in place.
 antix: $(ANTIX_DIST)/anachron-llama-antix
-$(ANTIX_DIST)/anachron-llama-antix: $(LL_CSRC) infer/infer_llama.cpp
+$(ANTIX_DIST)/anachron-llama-antix: $(LL_CSRC) infer/infer_llama.cpp $(HEADERS)
 	@mkdir -p build-obj-antix $(ANTIX_DIST)
 	@for f in $(LL_CSRC); do \
 	    echo "  CC32  $$f"; \
@@ -158,7 +158,7 @@ $(ANTIX_DIST)/anachron-llama-antix: $(LL_CSRC) infer/infer_llama.cpp
 # mingw g++-posix, links the static build-xp libs. Cannot run here (no wine) - verify
 # with: i686-w64-mingw32-objdump -p dist/xp/anachron.exe
 xp: $(XP_DIST)/anachron.exe
-$(XP_DIST)/anachron.exe: $(LL_CSRC_WIN) infer/infer_llama.cpp
+$(XP_DIST)/anachron.exe: $(LL_CSRC_WIN) infer/infer_llama.cpp $(HEADERS)
 	@mkdir -p build-obj-xp $(XP_DIST)
 	@for f in $(LL_CSRC_WIN); do \
 	    echo "  XPCC  $$f"; \
