@@ -7,6 +7,16 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-23
+
+### Added
+- Live-formatted streaming: a `write_file` tool call's code now streams as real,
+  indented source (newlines and escapes decoded) instead of escaped-JSON on one line,
+  so it looks the way it will land in the file. The `<tool_call>` / JSON wrapper is
+  suppressed, and `final` messages / edit diffs aren't double-printed.
+- Indentation + spacing for the model's output: replies and streamed code are indented
+  under a leading blank line for a cleaner, more readable transcript.
+
 ## [0.3.1] - 2026-06-23
 
 ### Added
@@ -130,7 +140,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/BerTobi/Anachron/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/BerTobi/Anachron/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/BerTobi/Anachron/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/BerTobi/Anachron/compare/v0.2.0...v0.2.1

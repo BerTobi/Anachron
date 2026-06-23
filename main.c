@@ -43,10 +43,49 @@
 #define A_NOTE   "\x1b[33m"     /* yellow     — notices */
 #define A_FINAL  "\x1b[1;35m"   /* bold magenta — the final header */
 
-typedef struct { FILE *out; FILE *log; int color; } ui;
+/* Streaming-render states (see ui_token). The raw model token stream is turned into
+ * a readable view live: plain replies pass through indented; a write_file/edit tool
+ * call's `content`/`new` value is shown with real newlines and indentation while the
+ * surrounding JSON wrapper is suppressed. */
+enum { SR_DECIDE, SR_PLAIN, SR_TOOL, SR_VALWAIT, SR_CONTENT, SR_AFTER };
 
-/* Return `code` if the UI has color on, else "" — lets format strings stay simple. */
+typedef struct {
+    FILE *out; FILE *log; int color;
+    int  sr;             /* stream state */
+    char sr_acc[64];     /* DECIDE: accumulate until plain-vs-tool is clear */
+    int  sr_acc_n;
+    char sr_win[12];     /* TOOL: rolling window to spot the `"content"`/`"new"` key */
+    int  sr_win_n;
+    int  sr_esc;         /* CONTENT: previous char was a backslash */
+    int  sr_bol;         /* at beginning of a line (drives indentation) */
+    int  sr_began;       /* emitted anything this turn (drives the leading blank line) */
+} ui;
+
+#define SR_INDENT "  "
+
 static const char *cc(const ui *u, const char *code) { return u->color ? code : ""; }
+
+/* Emit one already-decoded output char, indenting at the start of each line and
+ * printing a leading blank line before the model's first output of the turn. */
+static void sr_emit(ui *u, char c) {
+    if (!u->sr_began) { fputc('\n', u->out); u->sr_began = 1; }
+    if (u->sr_bol && c != '\n') { fputs(SR_INDENT, u->out); u->sr_bol = 0; }
+    fputc(c, u->out);
+    u->sr_bol = (c == '\n');
+}
+
+static int win_ends(const char *w, int n, const char *needle) {
+    int nl = (int)strlen(needle);
+    return n >= nl && memcmp(w + n - nl, needle, (size_t)nl) == 0;
+}
+
+/* Reset the streaming renderer at the start of each model generation. */
+static void ui_stream_reset(ui *u) {
+    u->sr = SR_DECIDE; u->sr_acc_n = 0; u->sr_win_n = 0;
+    u->sr_esc = 0; u->sr_bol = 1; u->sr_began = 0;
+}
+
+static void ui_iter_start(int iter, void *ud) { (void)iter; ui_stream_reset((ui *)ud); }
 
 /* Debug log sink: append one line to the log file when --log/ANACHRON_LOG is set. */
 static void ui_log(const char *text, void *ud) {
@@ -58,15 +97,61 @@ static void ui_log(const char *text, void *ud) {
 
 static void ui_token(const char *piece, void *ud) {
     ui *u = ud;
-    fputs(piece, u->out);
+    for (const char *p = piece; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        switch (u->sr) {
+        case SR_DECIDE:
+            if (u->sr_acc_n < (int)sizeof u->sr_acc - 1) u->sr_acc[u->sr_acc_n++] = (char)c;
+            u->sr_acc[u->sr_acc_n] = '\0';
+            if (strstr(u->sr_acc, "<tool_call>") || strstr(u->sr_acc, "\"name\"")) {
+                /* a tool call — seed the key-matcher window from the tail we buffered */
+                int W = (int)sizeof u->sr_win;
+                int start = u->sr_acc_n > W ? u->sr_acc_n - W : 0;
+                u->sr_win_n = u->sr_acc_n - start;
+                memcpy(u->sr_win, u->sr_acc + start, (size_t)u->sr_win_n);
+                u->sr = SR_TOOL;
+            } else if (u->sr_acc_n >= (int)sizeof u->sr_acc - 1) {
+                u->sr = SR_PLAIN;                 /* no tool marker in 63 chars — plain text */
+                for (int i = 0; i < u->sr_acc_n; i++) sr_emit(u, u->sr_acc[i]);
+            }
+            break;
+        case SR_PLAIN:
+            sr_emit(u, (char)c);
+            break;
+        case SR_TOOL: {
+            int W = (int)sizeof u->sr_win;
+            if (u->sr_win_n < W) u->sr_win[u->sr_win_n++] = (char)c;
+            else { memmove(u->sr_win, u->sr_win + 1, (size_t)(W - 1)); u->sr_win[W - 1] = (char)c; }
+            if (win_ends(u->sr_win, u->sr_win_n, "\"content\""))
+                u->sr = SR_VALWAIT;   /* render write_file's code; edits show via the diff */
+            break;
+        }
+        case SR_VALWAIT:
+            if (c == '"') u->sr = SR_CONTENT;     /* opening quote of the value */
+            break;
+        case SR_CONTENT:
+            if (u->sr_esc) {
+                char e = (c == 'n') ? '\n' : (c == 't') ? '\t' : (c == 'r') ? '\r' : (char)c;
+                sr_emit(u, e);
+                u->sr_esc = 0;
+            } else if (c == '\\') { u->sr_esc = 1; }
+            else if (c == '"') { u->sr = SR_AFTER; }   /* end of the value */
+            else sr_emit(u, (char)c);
+            break;
+        case SR_AFTER:
+            break;                                 /* suppress the JSON tail */
+        }
+    }
     fflush(u->out);
 }
 
-/* A plain conversational reply. The text already streamed via ui_token, so just
- * close the line. */
+/* A plain conversational reply: the text streamed via ui_token. Flush a short reply
+ * that never left the DECIDE buffer, then close the line. */
 static void ui_message(const char *text, void *ud) {
     ui *u = ud;
     (void)text;
+    if (u->sr == SR_DECIDE)
+        for (int i = 0; i < u->sr_acc_n; i++) sr_emit(u, u->sr_acc[i]);
     fputc('\n', u->out);
     fflush(u->out);
 }
@@ -922,7 +1007,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    ui u = { stdout, logf, use_color };
+    ui u = {0};
+    u.out = stdout; u.log = logf; u.color = use_color;
     agent_config cfg = {0};
     cfg.infer = backend;
     cfg.grammar = grammar;          /* stub ignores it; llama backend honors it */
@@ -938,7 +1024,7 @@ int main(int argc, char **argv) {
     cfg.on_diff = ui_diff;
     cfg.on_log = logf ? ui_log : NULL;
     cfg.ud = &u;
-    cfg.on_iter_start = NULL;       /* no step-counter noise; tool lines show progress */
+    cfg.on_iter_start = ui_iter_start;   /* resets the streaming renderer each generation */
     cfg.on_token = ui_token;
     cfg.on_tool_call = ui_tool_call;
     cfg.on_tool_result = ui_tool_result;
