@@ -39,6 +39,11 @@ int  plat_isatty_stdout(void);
  * the next command. No-op / harmless on a non-terminal. */
 void plat_flush_input(void);
 
+/* Turn terminal echo on/off (best effort), leaving signal generation intact. Used to
+ * silence keys typed while the model is generating, so they don't spew escape bytes;
+ * combined with plat_flush_input before the next prompt. No-op on a non-terminal. */
+void plat_set_echo(int enable);
+
 /* Run `cmd` through the system shell with `cwd` as the working directory,
  * capturing stdout+stderr combined into *out (malloc'd, nul-terminated).
  * *exit_code receives the child's exit status. Returns 0 if the command was

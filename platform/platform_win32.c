@@ -96,6 +96,15 @@ void plat_flush_input(void) {
     if (h != INVALID_HANDLE_VALUE) FlushConsoleInputBuffer(h);
 }
 
+void plat_set_echo(int enable) {
+    HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode;
+    if (h == INVALID_HANDLE_VALUE || !GetConsoleMode(h, &mode)) return;
+    if (enable) mode |= ENABLE_ECHO_INPUT;
+    else        mode &= ~(DWORD)ENABLE_ECHO_INPUT;
+    SetConsoleMode(h, mode);
+}
+
 int plat_mkdir(const char *path) {
     if (_mkdir(path) == 0) return 0;
     DWORD attr = GetFileAttributesA(path);

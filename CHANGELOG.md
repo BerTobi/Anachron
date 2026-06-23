@@ -7,7 +7,16 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+### Added
+- Arrow-key line editing at the prompt (interactive POSIX terminal): Left/Right move the
+  cursor, Home/End (and Ctrl+A/Ctrl+E) jump to the ends, Backspace/Delete remove a
+  character, and printable keys insert at the cursor — so you can fix a typo mid-prompt
+  instead of retyping. (Previously arrow keys were merely swallowed.)
+
 ### Fixed
+- Keys pressed while the model is generating no longer echo as `^[[…` escape garbage:
+  terminal echo is suppressed during generation and any type-ahead is flushed before the
+  next prompt. Ctrl+C still interrupts (signal handling stays on).
 - `run_command` now warns when you run a stale build: if a command runs `./NAME` and its
   source (`NAME.c`/`NAME.cpp`) is newer than the binary — or the binary doesn't exist —
   the observation hints to recompile first (with the exact `cc NAME.c -o NAME` command).

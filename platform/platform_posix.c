@@ -96,6 +96,14 @@ void plat_flush_input(void) {
     if (isatty(STDIN_FILENO)) tcflush(STDIN_FILENO, TCIFLUSH);
 }
 
+void plat_set_echo(int enable) {
+    struct termios t;
+    if (!isatty(STDIN_FILENO) || tcgetattr(STDIN_FILENO, &t) != 0) return;
+    if (enable) t.c_lflag |= ECHO;
+    else        t.c_lflag &= ~((tcflag_t)ECHO);
+    tcsetattr(STDIN_FILENO, TCSANOW, &t);
+}
+
 int plat_mkdir(const char *path) {
     if (mkdir(path, 0777) == 0) return 0;
     struct stat st;

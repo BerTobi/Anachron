@@ -336,12 +336,23 @@ static int read_line_cooked(strbuf *task) {
 }
 
 #ifndef _WIN32
+/* Reprint buf[pos..len] then move the cursor back so it sits at `pos` again. Used
+ * after an insert/delete so the tail of the line is redrawn in place without needing
+ * to know the prompt's column. `pad` erases one trailing char (after a delete). */
+static void redraw_tail(const char *buf, size_t len, size_t pos, int pad) {
+    fwrite(buf + pos, 1, len - pos, stdout);
+    if (pad) fputc(' ', stdout);
+    size_t back = (len - pos) + (pad ? 1 : 0);
+    for (size_t i = 0; i < back; i++) fputc('\b', stdout);
+    fflush(stdout);
+}
+
 /* Raw-mode line editor for an interactive POSIX terminal. Reads byte-by-byte with
- * echo off so escape sequences (arrow keys, mouse-wheel-as-arrows, etc.) are
- * consumed and ignored instead of being echoed as `^[[A`/`^[[B` garbage and folded
- * into the command. Handles printable input, Backspace, Enter, Ctrl+C (cancel the
- * line) and Ctrl+D (EOF). Returns 1 = line ready, 0 = EOF/quit, -1 = not a TTY
- * (caller falls back to cooked mode). */
+ * echo off and implements in-line editing: printable chars insert at the cursor;
+ * Left/Right move it; Home/End (and Ctrl+A/Ctrl+E) jump to the ends; Backspace and
+ * Delete remove a char; Enter submits; Ctrl+C cancels the line; Ctrl+D on an empty
+ * line is EOF. Arrow/escape sequences are parsed (not echoed as `^[[D` garbage).
+ * Returns 1 = line ready, 0 = EOF/quit, -1 = not a TTY (caller falls back to cooked). */
 static int read_line_raw(strbuf *task) {
     struct termios orig, raw;
     if (tcgetattr(STDIN_FILENO, &orig) != 0) return -1;
@@ -352,42 +363,71 @@ static int read_line_raw(strbuf *task) {
     raw.c_cc[VTIME] = 0;
     tcsetattr(STDIN_FILENO, TCSANOW, &raw);
 
-    sb_clear(task);
+    char buf[4096];
+    size_t len = 0, pos = 0;   /* content length and cursor index (0..len) */
     int ret = 1;
     for (;;) {
         unsigned char c;
-        if (read(STDIN_FILENO, &c, 1) != 1) { ret = task->len ? 1 : 0; break; }
+        if (read(STDIN_FILENO, &c, 1) != 1) { ret = len ? 1 : 0; break; }
+
         if (c == '\r' || c == '\n') { fputc('\n', stdout); fflush(stdout); break; }
-        if (c == 3) {                       /* Ctrl+C: cancel the current line */
-            fputs("^C\n", stdout); fflush(stdout); sb_clear(task); break;
-        }
-        if (c == 4) {                       /* Ctrl+D: EOF only on an empty line */
-            if (task->len == 0) { ret = 0; break; }
+        if (c == 3) { fputs("^C\n", stdout); fflush(stdout); len = pos = 0; break; } /* Ctrl+C */
+        if (c == 4) { if (len == 0) { ret = 0; break; } continue; }                  /* Ctrl+D */
+        if (c == 1) { while (pos > 0) { fputc('\b', stdout); pos--; } fflush(stdout); continue; } /* ^A home */
+        if (c == 5) { while (pos < len) fputc(buf[pos++], stdout); fflush(stdout); continue; }    /* ^E end */
+        if (c == 127 || c == 8) {            /* Backspace: delete left of cursor */
+            if (pos > 0) {
+                memmove(buf + pos - 1, buf + pos, len - pos);
+                pos--; len--;
+                fputc('\b', stdout);
+                redraw_tail(buf, len, pos, 1);
+            }
             continue;
         }
-        if (c == 127 || c == 8) {           /* Backspace */
-            if (task->len) { task->data[--task->len] = '\0'; fputs("\b \b", stdout); fflush(stdout); }
-            continue;
-        }
-        if (c == 27) {                      /* ESC: drain an escape sequence and ignore it */
+        if (c == 27) {                       /* escape sequence (arrows, Home/End, Del) */
             struct termios t = raw;
-            t.c_cc[VMIN] = 0; t.c_cc[VTIME] = 1;   /* ~0.1s, so a lone ESC won't block */
+            t.c_cc[VMIN] = 0; t.c_cc[VTIME] = 1;     /* short wait so a lone ESC won't block */
             tcsetattr(STDIN_FILENO, TCSANOW, &t);
-            unsigned char d;
-            if (read(STDIN_FILENO, &d, 1) == 1 && (d == '[' || d == 'O'))
-                while (read(STDIN_FILENO, &d, 1) == 1)
-                    if (d >= 0x40 && d <= 0x7e) break;   /* final byte of a CSI/SS3 */
+            unsigned char a = 0, b = 0;
+            if (read(STDIN_FILENO, &a, 1) == 1 && (a == '[' || a == 'O') &&
+                read(STDIN_FILENO, &b, 1) == 1) {
+                if (b == 'D') { if (pos > 0) { pos--; fputc('\b', stdout); fflush(stdout); } }       /* Left */
+                else if (b == 'C') { if (pos < len) { fputc(buf[pos++], stdout); fflush(stdout); } } /* Right */
+                else if (b == 'H') { while (pos > 0) { fputc('\b', stdout); pos--; } fflush(stdout); }/* Home */
+                else if (b == 'F') { while (pos < len) fputc(buf[pos++], stdout); fflush(stdout); }   /* End */
+                else if (b >= '0' && b <= '9') {     /* extended: ESC [ N ~ */
+                    unsigned char d = 0;
+                    while (read(STDIN_FILENO, &d, 1) == 1 && d != '~' &&
+                           !(d >= 0x40 && d <= 0x7e)) { /* consume any params */ }
+                    if (d == '~') {
+                        if (b == '3') {              /* Delete: remove char at cursor */
+                            if (pos < len) { memmove(buf + pos, buf + pos + 1, len - pos - 1);
+                                             len--; redraw_tail(buf, len, pos, 1); }
+                        } else if (b == '1' || b == '7') { while (pos > 0) { fputc('\b', stdout); pos--; } fflush(stdout); }
+                        else if (b == '4' || b == '8') { while (pos < len) fputc(buf[pos++], stdout); fflush(stdout); }
+                    }
+                }
+                /* Up/Down ('A'/'B') and anything else: ignored, not echoed */
+            }
             tcsetattr(STDIN_FILENO, TCSANOW, &raw);
             continue;
         }
-        if (c >= 0x20 && c < 0x7f) {        /* printable: append + echo */
-            sb_putc(task, (char)c);
-            fputc((int)c, stdout);
-            fflush(stdout);
+        if (c >= 0x20 && c < 0x7f) {          /* printable: insert at the cursor */
+            if (len < sizeof buf - 1) {
+                memmove(buf + pos + 1, buf + pos, len - pos);
+                buf[pos] = (char)c;
+                len++;
+                fputc((int)c, stdout);
+                pos++;
+                redraw_tail(buf, len, pos, 0);
+            }
+            continue;
         }
         /* other control bytes are ignored */
     }
     tcsetattr(STDIN_FILENO, TCSANOW, &orig);
+    sb_clear(task);
+    sb_append_n(task, buf, len);
     return ret;
 }
 #endif /* !_WIN32 */
@@ -917,7 +957,10 @@ int main(int argc, char **argv) {
             char *msg = expand_mentions(sb_cstr(&task), sandbox);
             double t0 = plat_time_sec();
             interrupt_clear();
+            plat_set_echo(0);   /* keys typed while generating won't echo as garbage;
+                                   Ctrl+C still interrupts (signals stay on) */
             rc = agent_session_run_turn(&session, msg);
+            plat_set_echo(1);
             double elapsed = plat_time_sec() - t0;
             stats_record(&stats, &session, elapsed);
             print_turn_stats(&u, elapsed, &session);
