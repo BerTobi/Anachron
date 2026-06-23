@@ -7,11 +7,15 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-23
+
 ### Added
 - Arrow-key line editing at the prompt (interactive POSIX terminal): Left/Right move the
   cursor, Home/End (and Ctrl+A/Ctrl+E) jump to the ends, Backspace/Delete remove a
   character, and printable keys insert at the cursor — so you can fix a typo mid-prompt
   instead of retyping. (Previously arrow keys were merely swallowed.)
+- Up/Down command history at the prompt: recall and edit previously submitted lines
+  (session-scoped, de-duplicated).
 
 ### Fixed
 - Keys pressed while the model is generating no longer echo as `^[[…` escape garbage:
@@ -126,7 +130,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/BerTobi/Anachron/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/BerTobi/Anachron/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/BerTobi/Anachron/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/BerTobi/Anachron/compare/v0.1.1...v0.2.0

@@ -347,11 +347,34 @@ static void redraw_tail(const char *buf, size_t len, size_t pos, int pad) {
     fflush(stdout);
 }
 
+/* Command history for Up/Down recall. Session-scoped, oldest..newest. */
+#define HIST_MAX 128
+static char  *g_hist[HIST_MAX];
+static int    g_hist_count = 0;
+
+static void hist_push(const char *line) {
+    if (!line || !*line) return;                          /* skip blanks */
+    if (g_hist_count > 0 && strcmp(g_hist[g_hist_count - 1], line) == 0) return; /* dedup */
+    if (g_hist_count == HIST_MAX) {                       /* ring: drop oldest */
+        free(g_hist[0]);
+        memmove(g_hist, g_hist + 1, (HIST_MAX - 1) * sizeof *g_hist);
+        g_hist_count--;
+    }
+    g_hist[g_hist_count++] = xstrdup(line);
+}
+
+/* Move the cursor to the start of the input (just after the prompt) and erase the
+ * old input to end of line, so a recalled history entry can be drawn cleanly. */
+static void clear_input_line(size_t pos) {
+    for (size_t i = 0; i < pos; i++) fputc('\b', stdout);
+    fputs("\x1b[K", stdout);   /* erase to end of line */
+}
+
 /* Raw-mode line editor for an interactive POSIX terminal. Reads byte-by-byte with
  * echo off and implements in-line editing: printable chars insert at the cursor;
- * Left/Right move it; Home/End (and Ctrl+A/Ctrl+E) jump to the ends; Backspace and
- * Delete remove a char; Enter submits; Ctrl+C cancels the line; Ctrl+D on an empty
- * line is EOF. Arrow/escape sequences are parsed (not echoed as `^[[D` garbage).
+ * Left/Right move it; Home/End (and Ctrl+A/Ctrl+E) jump to the ends; Up/Down recall
+ * command history; Backspace and Delete remove a char; Enter submits; Ctrl+C cancels
+ * the line; Ctrl+D on an empty line is EOF. Escape sequences are parsed, not echoed.
  * Returns 1 = line ready, 0 = EOF/quit, -1 = not a TTY (caller falls back to cooked). */
 static int read_line_raw(strbuf *task) {
     struct termios orig, raw;
@@ -365,6 +388,9 @@ static int read_line_raw(strbuf *task) {
 
     char buf[4096];
     size_t len = 0, pos = 0;   /* content length and cursor index (0..len) */
+    int browse = g_hist_count; /* history index; == count means "not browsing" */
+    char saved[4096];          /* in-progress line, stashed when browsing up */
+    size_t saved_len = 0;
     int ret = 1;
     for (;;) {
         unsigned char c;
@@ -395,6 +421,28 @@ static int read_line_raw(strbuf *task) {
                 else if (b == 'C') { if (pos < len) { fputc(buf[pos++], stdout); fflush(stdout); } } /* Right */
                 else if (b == 'H') { while (pos > 0) { fputc('\b', stdout); pos--; } fflush(stdout); }/* Home */
                 else if (b == 'F') { while (pos < len) fputc(buf[pos++], stdout); fflush(stdout); }   /* End */
+                else if (b == 'A') {                 /* Up: recall older history */
+                    if (browse > 0) {
+                        if (browse == g_hist_count) { memcpy(saved, buf, len); saved_len = len; }
+                        browse--;
+                        const char *h = g_hist[browse];
+                        size_t hl = strlen(h); if (hl >= sizeof buf) hl = sizeof buf - 1;
+                        clear_input_line(pos);
+                        memcpy(buf, h, hl); len = pos = hl;
+                        fwrite(buf, 1, len, stdout); fflush(stdout);
+                    }
+                }
+                else if (b == 'B') {                 /* Down: newer history / in-progress line */
+                    if (browse < g_hist_count) {
+                        browse++;
+                        const char *src = (browse == g_hist_count) ? saved : g_hist[browse];
+                        size_t sl = (browse == g_hist_count) ? saved_len : strlen(src);
+                        if (sl >= sizeof buf) sl = sizeof buf - 1;
+                        clear_input_line(pos);
+                        memcpy(buf, src, sl); len = pos = sl;
+                        fwrite(buf, 1, len, stdout); fflush(stdout);
+                    }
+                }
                 else if (b >= '0' && b <= '9') {     /* extended: ESC [ N ~ */
                     unsigned char d = 0;
                     while (read(STDIN_FILENO, &d, 1) == 1 && d != '~' &&
@@ -407,7 +455,7 @@ static int read_line_raw(strbuf *task) {
                         else if (b == '4' || b == '8') { while (pos < len) fputc(buf[pos++], stdout); fflush(stdout); }
                     }
                 }
-                /* Up/Down ('A'/'B') and anything else: ignored, not echoed */
+                /* anything else: ignored, not echoed */
             }
             tcsetattr(STDIN_FILENO, TCSANOW, &raw);
             continue;
@@ -428,6 +476,7 @@ static int read_line_raw(strbuf *task) {
     tcsetattr(STDIN_FILENO, TCSANOW, &orig);
     sb_clear(task);
     sb_append_n(task, buf, len);
+    if (ret == 1 && len > 0) hist_push(sb_cstr(task));   /* remember submitted lines */
     return ret;
 }
 #endif /* !_WIN32 */
