@@ -7,7 +7,28 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-06-23
+
+### Added
+- Per-token decode bar for very slow hardware (in-process llama backend, POSIX terminal):
+  when a single token's forward pass takes seconds (e.g. the 1.5B on a Pentium-M at
+  ~0.2 tok/s), a small bar fills over that one decode — `[#######.......] ~3s` — so the
+  gap between tokens shows live progress instead of dead air. A single decode is bounded
+  work, so the percentage is honest; it's filled by a time estimate (EMA of recent decode
+  times) and clamped below 100% until the token actually lands. Driven by ggml's
+  `abort_callback` (measured firing ~485×/decode — ample), drawn with ANSI cursor
+  save/restore so it never disturbs the streamed text. Auto-gated: only engages above
+  ~1.5 s/token, so faster setups (and the 0.5B) never see it strobe. Tunable via
+  `ANACHRON_PTOK_MIN_SEC`. The XP console (no ANSI) keeps the load + prefill bars only.
+- Ctrl+C is now felt mid-decode: the same `abort_callback` aborts an in-progress forward
+  pass, so an interrupt during a multi-second token stops within milliseconds instead of
+  waiting out the whole decode. The aborted token's KV state is reconciled (the cache
+  mirror is dropped so the next turn re-prefills cleanly) and partial output is kept.
+
 ### Fixed
+- A Ctrl+C-aborted decode no longer prints llama's `failed to compute graph / failed to
+  decode` error spew: that output is expected (we asked it to abort) and is suppressed
+  while an interrupt is pending, so an interrupt reads as a clean stop, not a crash.
 - Build: the antiX (`antix`) and Windows XP (`xp`) cross targets now depend on the
   project headers, so a `core/version.h` bump (or any header edit) rebuilds them
   instead of leaving a stale cross binary. The native targets already had this; the
@@ -192,7 +213,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/BerTobi/Anachron/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/BerTobi/Anachron/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/BerTobi/Anachron/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/BerTobi/Anachron/compare/v0.3.1...v0.4.0

@@ -25,9 +25,11 @@
 #ifdef _WIN32
 #include <io.h>
 #define ANCH_ISATTY_ERR() _isatty(_fileno(stderr))
+#define ANCH_ISATTY_OUT() _isatty(_fileno(stdout))
 #else
 #include <unistd.h>
 #define ANCH_ISATTY_ERR() isatty(fileno(stderr))
+#define ANCH_ISATTY_OUT() isatty(fileno(stdout))
 #endif
 
 extern "C" double plat_time_sec(void);   /* monotonic wall clock (platform_*.c) */
@@ -39,10 +41,23 @@ struct infer_ctx {
     std::vector<llama_token>  cached;  /* tokens currently held in the KV cache (seq 0), in order */
     int                       last_prompt_tokens;
     int                       last_completion_tokens;
+    /* intra-token decode instrumentation (drives the per-token progress bar) */
+    double                    decode_t0;        /* wall-clock start of the current decode */
+    long                      decode_fires;     /* abort_callback invocations in current decode */
+    int                       probe;            /* ANACHRON_PROBE_DECODE: print per-decode fire stats */
+    double                    last_decode_sec;  /* measured time of the previous decode (the T estimate) */
+    double                    bar_last_draw;    /* throttle: wall-clock of the last bar redraw */
+    int                       bar_active;       /* per-token bar engaged for the CURRENT decode (gated) */
+    int                       out_tty;          /* stdout is an interactive terminal (set once) */
+    double                    ptok_min_sec;     /* show the per-token bar only above this decode time */
 };
 
 static void quiet_log(enum ggml_log_level level, const char *text, void *ud) {
     (void)ud;
+    /* During a user Ctrl+C we deliberately abort llama_decode, which makes ggml/llama
+     * log "failed to compute graph / failed to decode" at ERROR level. That's expected,
+     * not a fault - suppress it so an interrupt looks clean instead of like a crash. */
+    if (interrupt_pending()) return;
     if (level >= GGML_LOG_LEVEL_ERROR) fputs(text, stderr);
 }
 
@@ -81,6 +96,47 @@ static void clear_bar(void) {
     fflush(stderr);
 }
 
+/* --- per-token decode bar (very slow hardware only) ------------------------------
+ * On sub-~1-tok/s hardware a single token's forward pass is seconds of dead air. We
+ * fill a small bar over that one decode (its work is bounded, so a % is honest),
+ * driven by abort_callback ticks and a time estimate from the previous decode. It
+ * lives just after the streamed text on the same terminal line, drawn/erased with
+ * ANSI save-restore-cursor (DECSC/DECRC) + erase-to-EOL, so it never disturbs the
+ * streamed output. ANSI is POSIX/antiX only - the XP console gets no per-token bar
+ * (it has no cursor save/restore), which is fine: the load + prefill bars remain. */
+#ifndef _WIN32
+static void ptok_bar_begin(void) { fputs("\0337", stdout); fflush(stdout); }  /* DECSC: save cursor */
+static void ptok_bar_end(void)   { fputs("\0338\033[K", stdout); fflush(stdout); } /* DECRC + erase bar */
+
+static void ptok_bar_draw(double frac, double rem_sec) {
+    if (frac < 0) frac = 0;
+    if (frac > 0.99) frac = 0.99;   /* never show a full/"done" bar before the token lands */
+    const int W = 14;
+    int fill = (int)(frac * W + 0.5f);
+    char bar[W + 1];
+    for (int i = 0; i < W; i++) bar[i] = (i < fill) ? '#' : '.';
+    bar[W] = '\0';
+    if (rem_sec < 1.0) rem_sec = 1.0;
+    /* DECRC back to end-of-text, erase any old bar, draw "  [####....] ~Ns" */
+    printf("\0338\033[K  [%s] ~%.0fs", bar, rem_sec);
+    fflush(stdout);
+}
+#else
+static void ptok_bar_begin(void) {}
+static void ptok_bar_end(void)   {}
+static void ptok_bar_draw(double, double) {}
+#endif
+
+/* Engage the per-token bar for the next decode only when stdout is a terminal and the
+ * previous decode was slow enough that a filling bar helps rather than strobes. */
+static int ptok_bar_enabled(const infer_ctx *c) {
+#ifdef _WIN32
+    (void)c; return 0;
+#else
+    return c->out_tty && c->last_decode_sec > c->ptok_min_sec;
+#endif
+}
+
 struct load_state { double t0; bool tty; };
 
 static bool load_progress_cb(float progress, void *ud) {
@@ -93,6 +149,33 @@ static bool load_progress_cb(float progress, void *ud) {
     draw_bar("loading model", progress, eta, -1, -1);
     if (progress >= 0.999f) clear_bar();
     return true;                               /* true => keep loading */
+}
+
+/* abort_callback: ggml invokes this periodically DURING llama_decode (it exists so a
+ * long compute can be cancelled). We piggy-back on it to (a) measure decode granularity
+ * [probe], and later to drive the per-token bar and make Ctrl+C responsive mid-decode.
+ * Returning true aborts the compute; false continues. */
+static bool decode_abort_cb(void *data) {
+    infer_ctx *c = (infer_ctx *)data;
+    if (!c) return false;
+    c->decode_fires++;
+    /* Ctrl+C felt mid-decode: abort this forward pass now instead of waiting up to a
+     * full (multi-second, on slow hardware) token. Clean the bar first so the cursor
+     * is restored, then signal the abort. */
+    if (interrupt_pending()) {
+        if (c->bar_active) { ptok_bar_end(); c->bar_active = 0; }
+        return true;
+    }
+    if (c->bar_active) {
+        double now = plat_time_sec();
+        if (now - c->bar_last_draw >= 0.15) {        /* throttle redraws to ~150ms */
+            c->bar_last_draw = now;
+            double el = now - c->decode_t0;
+            double frac = (c->last_decode_sec > 0) ? el / c->last_decode_sec : 0.0;
+            ptok_bar_draw(frac, c->last_decode_sec - el);
+        }
+    }
+    return false;   /* false => keep computing (Ctrl+C handling added in step 3) */
 }
 
 static int env_threads(void) {
@@ -148,6 +231,18 @@ extern "C" infer_ctx *infer_init(const char *gguf_path, int n_ctx) {
     c->vocab = llama_model_get_vocab(model);
     c->last_prompt_tokens = 0;
     c->last_completion_tokens = 0;
+    c->decode_t0 = 0.0;
+    c->decode_fires = 0;
+    c->probe = (getenv("ANACHRON_PROBE_DECODE") != nullptr);
+    c->last_decode_sec = 0.0;
+    c->bar_last_draw = 0.0;
+    c->bar_active = 0;
+    c->out_tty = (ANCH_ISATTY_OUT() != 0);
+    {   /* per-token bar engages above this decode time; default 1.5s (~< 0.66 tok/s) */
+        const char *e = getenv("ANACHRON_PTOK_MIN_SEC");
+        c->ptok_min_sec = (e && atof(e) > 0.0) ? atof(e) : 1.5;
+    }
+    llama_set_abort_callback(c->ctx, decode_abort_cb, c);
     return c;
 }
 
@@ -280,7 +375,37 @@ extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *gram
         if (llama_memory_seq_pos_max(mem, 0) + 1 >= n_ctx) break; /* out of room */
         llama_token cur = id;
         llama_batch b = llama_batch_get_one(&cur, 1);
-        if (llama_decode(c->ctx, b) != 0) { rc = -1; break; }
+        /* The single-token forward pass: the ~5s gap on slow hardware. Measure how
+         * often abort_callback fires inside it (step 1: validates the per-token bar). */
+        c->decode_fires = 0;
+        c->decode_t0 = plat_time_sec();
+        c->bar_active = ptok_bar_enabled(c);
+        c->bar_last_draw = 0.0;                  /* draw on the first throttled tick */
+        if (c->bar_active) ptok_bar_begin();     /* save cursor at end of streamed text */
+        int dec = llama_decode(c->ctx, b);
+        double dsec = plat_time_sec() - c->decode_t0;
+        if (c->bar_active) { ptok_bar_end(); c->bar_active = 0; }
+        /* EMA estimate for the NEXT token's bar: robust to a one-off slow/fast decode
+         * (e.g. host scheduling jitter) while still tracking a real rate change. */
+        c->last_decode_sec = (c->last_decode_sec > 0.0)
+            ? 0.6 * c->last_decode_sec + 0.4 * dsec
+            : dsec;
+        if (c->probe) {
+            fprintf(stderr, "[probe] decode #%d: %ld fires in %.0f ms (%.1f ms/fire)\n",
+                    c->last_completion_tokens, c->decode_fires, dsec * 1000.0,
+                    c->decode_fires ? (dsec * 1000.0) / (double)c->decode_fires : 0.0);
+        }
+        if (dec != 0) {
+            if (interrupt_pending()) {
+                /* Aborted mid-decode by Ctrl+C: the just-emitted token is in c->cached
+                 * but its KV entry may be partial, so the mirror and the KV cache can
+                 * disagree. Drop the mirror; the next turn then re-prefills from scratch
+                 * (one slow prompt) rather than reusing a possibly-corrupt prefix. */
+                c->cached.clear();
+                break;                        /* clean stop, keep the partial output */
+            }
+            rc = -1; break;                   /* genuine decode failure */
+        }
     }
 
     llama_sampler_free(smpl);
