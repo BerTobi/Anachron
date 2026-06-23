@@ -7,6 +7,25 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-06-23
+
+### Added
+- Cold-start progress bars (in-process llama backend, interactive terminal only): the
+  two slow, previously-silent phases of a cold turn now show a real ASCII bar with a
+  rough ETA — `loading model [####....] 43% ~1s` during model load, and
+  `reading prompt [####....] 1024/1190 tokens ~13s` during the first prompt prefill.
+  Both have a known size, so the bar and ETA are honest (the ETA extrapolates from the
+  measured rate). Generation has no known length, so it just streams as before — no
+  bogus percentage. The model-load bar uses llama.cpp's `progress_callback`; the
+  prefill bar ticks the existing 32-token decode loop.
+
+### Changed
+- The backend now owns llama.cpp's load `progress_callback`, which replaces its default
+  loader dots. On a non-interactive stderr (pipes, redirected output, the test harness)
+  the bars draw nothing AND the dots stay suppressed, so redirected output is cleaner
+  than before. The prefill bar only appears when there's a substantial prefix to
+  process, so cache-reusing follow-up turns don't flash it.
+
 ## [0.4.1] - 2026-06-23
 
 ### Added
@@ -166,7 +185,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/BerTobi/Anachron/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/BerTobi/Anachron/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/BerTobi/Anachron/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/BerTobi/Anachron/compare/v0.3.0...v0.3.1

@@ -22,6 +22,16 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <io.h>
+#define ANCH_ISATTY_ERR() _isatty(_fileno(stderr))
+#else
+#include <unistd.h>
+#define ANCH_ISATTY_ERR() isatty(fileno(stderr))
+#endif
+
+extern "C" double plat_time_sec(void);   /* monotonic wall clock (platform_*.c) */
+
 struct infer_ctx {
     llama_model              *model;
     llama_context            *ctx;
@@ -34,6 +44,55 @@ struct infer_ctx {
 static void quiet_log(enum ggml_log_level level, const char *text, void *ud) {
     (void)ud;
     if (level >= GGML_LOG_LEVEL_ERROR) fputs(text, stderr);
+}
+
+/* --- cold-start progress bars (stderr, only when stderr is a terminal) -----------
+ * The slow, silent part of a cold turn is model load + the first prompt prefill, and
+ * both have a KNOWN size, so we can show a real bar (ASCII, XP-console safe) with a
+ * rough ETA extrapolated from the steady rate. Generation has no known length, so it
+ * just streams (no bar). When stderr is not a TTY (pipes, the test harness) we draw
+ * nothing - and because we still own the load callback, that also suppresses llama's
+ * own loader dots, keeping piped output clean. */
+static bool stderr_is_tty(void) { return ANCH_ISATTY_ERR() != 0; }
+
+static void draw_bar(const char *label, float frac, double eta, long cur, long total) {
+    if (frac < 0) frac = 0;
+    if (frac > 1) frac = 1;
+    const int W = 16;
+    int fill = (int)(frac * W + 0.5f);
+    char bar[W + 3];
+    int k = 0;
+    bar[k++] = '[';
+    for (int i = 0; i < W; i++) bar[k++] = (i < fill) ? '#' : '.';
+    bar[k++] = ']';
+    bar[k] = '\0';
+    char tail[48];
+    if (total >= 0) snprintf(tail, sizeof tail, "%ld/%ld tokens", cur, total);
+    else            snprintf(tail, sizeof tail, "%3d%%", (int)(frac * 100 + 0.5f));
+    char etabuf[24];
+    etabuf[0] = '\0';
+    if (eta >= 0) snprintf(etabuf, sizeof etabuf, "  ~%.0fs", eta < 1.0 ? 1.0 : eta);
+    fprintf(stderr, "\r%-14s %s %s%s   ", label, bar, tail, etabuf);
+    fflush(stderr);
+}
+
+static void clear_bar(void) {
+    fprintf(stderr, "\r%60s\r", "");
+    fflush(stderr);
+}
+
+struct load_state { double t0; bool tty; };
+
+static bool load_progress_cb(float progress, void *ud) {
+    load_state *ls = (load_state *)ud;
+    if (!ls || !ls->tty) return true;          /* not a tty: draw nothing, suppress dots */
+    double now = plat_time_sec();
+    if (ls->t0 < 0) ls->t0 = now;
+    double el = now - ls->t0;
+    double eta = (progress > 0.02f) ? el * (1.0 - progress) / progress : -1.0;
+    draw_bar("loading model", progress, eta, -1, -1);
+    if (progress >= 0.999f) clear_bar();
+    return true;                               /* true => keep loading */
 }
 
 static int env_threads(void) {
@@ -54,7 +113,17 @@ extern "C" infer_ctx *infer_init(const char *gguf_path, int n_ctx) {
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = 0; /* CPU only — there is no GPU on the target */
 
+    /* Real model-load progress bar (the dominant cold-start cost). Owning the
+     * callback also suppresses llama's default loader dots when piped. The callback
+     * runs synchronously inside the load call, so a local load_state is fine. */
+    load_state ls;
+    ls.t0 = -1.0;
+    ls.tty = stderr_is_tty();
+    mparams.progress_callback = load_progress_cb;
+    mparams.progress_callback_user_data = &ls;
+
     llama_model *model = llama_model_load_from_file(gguf_path, mparams);
+    if (ls.tty) clear_bar();   /* clear the line even if the last tick was < 100% */
     if (!model) {
         fprintf(stderr, "infer_llama: failed to load model %s\n", gguf_path);
         return nullptr;
@@ -134,16 +203,31 @@ extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *gram
         const int CHUNK = 32;   /* small enough that Ctrl+C during a slow prompt
                                    decode is felt within a few seconds, big enough
                                    that per-batch overhead stays negligible */
+        /* Prefill progress bar: only when there's a substantial prefix to process
+         * (the slow first turn). Incremental turns reuse the KV cache (large n_keep,
+         * few new tokens), so the bar stays out of the way. */
+        const int n_new_total = n_tok - n_keep;
+        const bool show_pf = stderr_is_tty() && n_new_total > 64;
+        const double pf_t0 = show_pf ? plat_time_sec() : 0.0;
         for (int off = n_keep; off < n_tok; off += CHUNK) {
-            if (interrupt_pending()) return 0;   /* aborted mid-prompt; no generation */
+            if (interrupt_pending()) { if (show_pf) clear_bar(); return 0; }   /* aborted mid-prompt */
             int n_new = (n_tok - off < CHUNK) ? (n_tok - off) : CHUNK;
             llama_batch batch = llama_batch_get_one(toks.data() + off, n_new);
             if (llama_decode(c->ctx, batch) != 0) {
+                if (show_pf) clear_bar();
                 fprintf(stderr, "infer_llama: decode (prompt) failed\n");
                 return -1;
             }
             for (int i = off; i < off + n_new; i++) c->cached.push_back(toks[i]);
+            if (show_pf) {
+                long done = (long)(off + n_new - n_keep);
+                double frac = (double)done / (double)n_new_total;
+                double el = plat_time_sec() - pf_t0;
+                double eta = (frac > 0.02) ? el * (1.0 - frac) / frac : -1.0;
+                draw_bar("reading prompt", (float)frac, eta, done, (long)n_new_total);
+            }
         }
+        if (show_pf) clear_bar();
     }
 
     /* Greedy + optional LAZY grammar. Lazy so the model can just talk: the grammar
