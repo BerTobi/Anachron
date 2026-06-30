@@ -4,7 +4,8 @@
 #   make            native dev-host binary  -> ./anachron        (POSIX platform)
 #   make test       build + run core unit tests
 #   make e2e        full agent-loop run over a scripted stub (real FS effects)
-#   make win        cross-compile the Win32 path (mingw) -> ./anachron.exe
+#   make win        Win32-layer STUB build (no model) -> ./anachron-stub.exe
+#   make xp         real model-backed Windows XP build -> ./dist/xp/anachron-xp.exe
 #                   COMPILE/LINK CHECK ONLY — cannot run here (no wine).
 #   make clean
 #
@@ -115,14 +116,17 @@ repair-e2e: anachron
 recover-e2e: anachron
 	sh tests/recover-e2e.sh
 
-# XP-safe cross build: subsystem 5.01, static, API ceiling pinned to XP SP3.
-win: anachron.exe
-anachron.exe: $(WIN_SRC) $(HEADERS)
+# Win32-layer test build: STUB backend (infer_stub.c) — NO model inference. This only
+# exercises the platform_win32 layer; it cannot run a model. The real model-backed
+# Windows build is `make xp`. Output is named -stub so it can't be mistaken for it.
+win: anachron-stub.exe
+anachron-stub.exe: $(WIN_SRC) $(HEADERS)
 	$(WINCC) $(CFLAGS) -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx \
 	    -D_WIN32_WINNT=0x0501 -DWINVER=0x0501 \
 	    -static -mconsole \
 	    -Wl,--major-subsystem-version=5 -Wl,--minor-subsystem-version=1 \
 	    $(WIN_SRC) -o $@
+	@echo "Built anachron-stub.exe — STUB backend (no model). For real inference use 'make xp'."
 
 # Real-inference build: C core compiled as C99, the one C++ TU as C++, linked
 # against the SSE2-only libllama/ggml from the Phase-0 spike. Run with e.g.:
@@ -159,10 +163,10 @@ $(ANTIX_DIST)/anachron-llama-antix: $(LL_CSRC) infer/infer_llama.cpp $(HEADERS)
 
 # Windows XP real-inference build: static PE32, subsystem 5.01, single self-contained
 # .exe (no DLLs). Compiles the C core with mingw gcc-posix and the C++ TU with
-# mingw g++-posix, links the static build-xp libs. Cannot run here (no wine) - verify
-# with: i686-w64-mingw32-objdump -p dist/xp/anachron.exe
-xp: $(XP_DIST)/anachron.exe
-$(XP_DIST)/anachron.exe: $(LL_CSRC_WIN) infer/infer_llama.cpp $(HEADERS) $(XP_STATIC)
+# mingw g++-posix, links the static (vendored) prebuilt/xp libs. Validate under wine:
+# wine dist/xp/anachron-xp.exe --version
+xp: $(XP_DIST)/anachron-xp.exe
+$(XP_DIST)/anachron-xp.exe: $(LL_CSRC_WIN) infer/infer_llama.cpp $(HEADERS) $(XP_STATIC)
 	@mkdir -p build-obj-xp $(XP_DIST)
 	@for f in $(LL_CSRC_WIN); do \
 	    echo "  XPCC  $$f"; \
@@ -170,9 +174,9 @@ $(XP_DIST)/anachron.exe: $(LL_CSRC_WIN) infer/infer_llama.cpp $(HEADERS) $(XP_ST
 	done
 	@echo "  XPCXX infer/infer_llama.cpp"
 	@$(XPCXX) $(SSE2) $(XP_EXTRA) -std=c++17 -O2 $(INCLUDES) $(XP_LLAMA_INC) -c infer/infer_llama.cpp -o build-obj-xp/infer_llama.o
-	@echo "  XPLD  $(XP_DIST)/anachron.exe (static PE32, subsystem 5.01)"
-	@$(XPCXX) build-obj-xp/*.o $(XP_STATIC) $(XP_SYSLIBS) $(XP_LDFLAGS) -o $(XP_DIST)/anachron.exe
-	@echo "Built $(XP_DIST)/anachron.exe - copy it + a GGUF model to the XP box."
+	@echo "  XPLD  $(XP_DIST)/anachron-xp.exe (static PE32, subsystem 5.01)"
+	@$(XPCXX) build-obj-xp/*.o $(XP_STATIC) $(XP_SYSLIBS) $(XP_LDFLAGS) -o $(XP_DIST)/anachron-xp.exe
+	@echo "Built $(XP_DIST)/anachron-xp.exe - copy it + a GGUF model to the XP box."
 
 # Refresh the vendored XP artifacts (prebuilt/xp/) from a freshly built spike-phase0
 # build-xp. Run this (then commit prebuilt/xp/) after bumping/rebuilding llama.cpp.
@@ -192,5 +196,5 @@ anachron-remote: $(REMOTE_SRC) $(HEADERS)
 	$(CC) $(CFLAGS) $(REMOTE_SRC) -o $@
 
 clean:
-	rm -f anachron anachron-test anachron.exe anachron-llama anachron-remote
+	rm -f anachron anachron-test anachron-stub.exe anachron-llama anachron-remote dist/xp/anachron-xp.exe
 	rm -rf build-obj build-obj-antix build-obj-xp dist

@@ -52,7 +52,8 @@ make           # stub backend, no model — proves the loop (no GPU/model needed
 make test      # unit tests
 make e2e       # scripted end-to-end; make verify-e2e for the write guardrail
 make llama     # in-process inference binary (needs spike-phase0/ set up)
-make win       # Windows XP cross-build (mingw)  -> anachron.exe
+make xp        # real Windows XP build (mingw)    -> dist/xp/anachron-xp.exe  (or just download it from Releases)
+make win       # Win32-layer STUB only, no model  -> anachron-stub.exe        (not for running models)
 make remote    # remote/offload client            -> anachron-remote
 ```
 

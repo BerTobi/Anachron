@@ -26,21 +26,24 @@ box) and run it in place:
 
 ## Windows XP (32-bit)
 
-A prebuilt, static **`anachron.exe`** is attached to each GitHub release — download it
-plus a model and run; no toolchain needed. To build it yourself from a clean clone:
+A prebuilt, static **`anachron-<ver>-winxp.exe`** is attached to each GitHub release —
+download it plus a model and run; no toolchain needed. This is the **real** model build.
+(Do NOT use `make win` / `anachron-stub.exe` — that's a no-model stub for testing the
+Win32 layer.) To build the real exe yourself from a clean clone:
 
 ```sh
-make xp             # -> dist/xp/anachron.exe  (single static PE32, subsystem 5.01)
+make xp             # -> dist/xp/anachron-xp.exe  (single static PE32, subsystem 5.01)
 ```
 
 `make xp` links the vendored XP llama.cpp artifacts in `prebuilt/xp/`, so it builds from
 a clean clone without the (untracked, embedded) `spike-phase0/llama.cpp` checkout. After
 rebuilding llama.cpp for XP, refresh them with `make xp-vendor` and commit `prebuilt/xp/`.
 
-Copy `dist/xp/anachron.exe` + a model to the XP box. In `cmd.exe`:
+Copy `dist/xp/anachron-xp.exe` (or the downloaded release exe) + a model to the XP box.
+In `cmd.exe`:
 
 ```
-anachron.exe --model model.gguf --sandbox work
+anachron-xp.exe --model model.gguf --sandbox work
 ```
 
 - Fully **static** — no DLLs to ship (imports only KERNEL32/ADVAPI32/msvcrt, all XP).

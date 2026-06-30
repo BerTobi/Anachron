@@ -4,7 +4,7 @@
 /anachron-llama-antix
 /anachron-remote
 /anachron-test
-/anachron.exe
+/anachron-stub.exe
 
 # --- Object files & build directories ---
 *.o

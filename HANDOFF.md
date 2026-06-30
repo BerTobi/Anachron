@@ -615,8 +615,8 @@ All 5 targets warning-clean; unit + e2e + verify-e2e green.
     resolve too). Proven portable: copied to `/tmp/anachron-usb`, ran from `/tmp`
     with no `LD_LIBRARY_PATH` ("9 plus 10 equals 19"). Needs 32-bit libstdc++/libgcc
     on the target (present on antiX). Still UNVERIFIED on real Pentium-M hardware.
-- **Phase 4 — Windows XP: DONE (build + all static gates; runtime unverified).**
-  `make xp` -> `dist/xp/anachron.exe`: real inference statically linked (mingw
+- **Phase 4 — Windows XP: DONE (build + Wine-validated; real-XP runtime unverified).**
+  `make xp` -> `dist/xp/anachron-xp.exe`: real inference statically linked (mingw
   `g++-posix`, `build-xp` static `.a` libs in the llama-simple lib order + Win32
   system libs; the XP threadpool patch is baked into `ggml-cpu.a`). Single
   self-contained 8.7MB PE32: subsystem **5.01**, imports only KERNEL32/ADVAPI32/
