@@ -63,9 +63,13 @@ LLAMA_LINK_ANTIX   = -L$(LLAMA_LIBDIR_ANTIX) -Wl,-rpath,'$$ORIGIN' -Wl,--disable
 XPCC      = i686-w64-mingw32-gcc-posix
 XPCXX     = i686-w64-mingw32-g++-posix
 XP_DIST   = dist/xp
-XP_LIBDIR = $(LLAMA_DIR)/build-xp
-XP_STATIC = $(XP_LIBDIR)/src/libllama.a $(XP_LIBDIR)/ggml/src/ggml.a \
-            $(XP_LIBDIR)/ggml/src/ggml-cpu.a $(XP_LIBDIR)/ggml/src/ggml-base.a
+# Windows-XP llama.cpp artifacts are VENDORED into the repo (prebuilt/xp/) so `make xp`
+# builds from a clean clone without the untracked, embedded spike-phase0 llama.cpp
+# checkout. Refresh them from a fresh build-xp with `make xp-vendor` after a llama bump.
+XP_PREBUILT  = prebuilt/xp
+XP_LLAMA_INC = -I$(XP_PREBUILT)/include -I$(XP_PREBUILT)/ggml-include
+XP_STATIC    = $(XP_PREBUILT)/lib/libllama.a $(XP_PREBUILT)/lib/ggml.a \
+               $(XP_PREBUILT)/lib/ggml-cpu.a $(XP_PREBUILT)/lib/ggml-base.a
 XP_SYSLIBS = -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 \
              -luuid -lcomdlg32 -ladvapi32
 XP_EXTRA  = -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -D_WIN32_WINNT=0x0501 -DWINVER=0x0501
@@ -75,7 +79,7 @@ LL_CSRC_WIN = $(CORE) $(TOOLS) platform/platform_win32.c $(MAIN)
 
 REMOTE_SRC = $(CORE) $(TOOLS) infer/infer_remote.c platform/platform_posix.c $(MAIN)
 
-.PHONY: all test e2e verify-e2e noop-e2e repair-e2e recover-e2e win llama antix xp remote clean
+.PHONY: all test e2e verify-e2e noop-e2e repair-e2e recover-e2e win llama antix xp xp-vendor remote clean
 
 all: anachron
 
@@ -158,17 +162,28 @@ $(ANTIX_DIST)/anachron-llama-antix: $(LL_CSRC) infer/infer_llama.cpp $(HEADERS)
 # mingw g++-posix, links the static build-xp libs. Cannot run here (no wine) - verify
 # with: i686-w64-mingw32-objdump -p dist/xp/anachron.exe
 xp: $(XP_DIST)/anachron.exe
-$(XP_DIST)/anachron.exe: $(LL_CSRC_WIN) infer/infer_llama.cpp $(HEADERS)
+$(XP_DIST)/anachron.exe: $(LL_CSRC_WIN) infer/infer_llama.cpp $(HEADERS) $(XP_STATIC)
 	@mkdir -p build-obj-xp $(XP_DIST)
 	@for f in $(LL_CSRC_WIN); do \
 	    echo "  XPCC  $$f"; \
 	    $(XPCC) $(CFLAGS) $(XP_EXTRA) -c $$f -o build-obj-xp/`basename $$f .c`.o || exit 1; \
 	done
 	@echo "  XPCXX infer/infer_llama.cpp"
-	@$(XPCXX) $(SSE2) $(XP_EXTRA) -std=c++17 -O2 $(INCLUDES) $(LLAMA_INC) -c infer/infer_llama.cpp -o build-obj-xp/infer_llama.o
+	@$(XPCXX) $(SSE2) $(XP_EXTRA) -std=c++17 -O2 $(INCLUDES) $(XP_LLAMA_INC) -c infer/infer_llama.cpp -o build-obj-xp/infer_llama.o
 	@echo "  XPLD  $(XP_DIST)/anachron.exe (static PE32, subsystem 5.01)"
 	@$(XPCXX) build-obj-xp/*.o $(XP_STATIC) $(XP_SYSLIBS) $(XP_LDFLAGS) -o $(XP_DIST)/anachron.exe
 	@echo "Built $(XP_DIST)/anachron.exe - copy it + a GGUF model to the XP box."
+
+# Refresh the vendored XP artifacts (prebuilt/xp/) from a freshly built spike-phase0
+# build-xp. Run this (then commit prebuilt/xp/) after bumping/rebuilding llama.cpp.
+xp-vendor:
+	@mkdir -p $(XP_PREBUILT)/lib $(XP_PREBUILT)/include $(XP_PREBUILT)/ggml-include
+	cp $(LLAMA_DIR)/build-xp/src/libllama.a $(LLAMA_DIR)/build-xp/ggml/src/ggml.a \
+	   $(LLAMA_DIR)/build-xp/ggml/src/ggml-cpu.a $(LLAMA_DIR)/build-xp/ggml/src/ggml-base.a \
+	   $(XP_PREBUILT)/lib/
+	cp $(LLAMA_DIR)/include/*.h $(XP_PREBUILT)/include/
+	cp $(LLAMA_DIR)/ggml/include/*.h $(XP_PREBUILT)/ggml-include/
+	@echo "Vendored XP libs+headers -> $(XP_PREBUILT)/ (commit it)."
 
 # Remote/GPU-offload build: thin HTTP client, NO local model/llama libs. Point it at
 # a llama.cpp server with ANACHRON_REMOTE=host:port. Pure C, links like the stub build.

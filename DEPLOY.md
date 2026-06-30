@@ -26,27 +26,48 @@ box) and run it in place:
 
 ## Windows XP (32-bit)
 
+A prebuilt, static **`anachron.exe`** is attached to each GitHub release — download it
+plus a model and run; no toolchain needed. To build it yourself from a clean clone:
+
 ```sh
 make xp             # -> dist/xp/anachron.exe  (single static PE32, subsystem 5.01)
 ```
 
-Copy `dist/xp/anachron.exe` + a model file to the XP box. In `cmd.exe`:
+`make xp` links the vendored XP llama.cpp artifacts in `prebuilt/xp/`, so it builds from
+a clean clone without the (untracked, embedded) `spike-phase0/llama.cpp` checkout. After
+rebuilding llama.cpp for XP, refresh them with `make xp-vendor` and commit `prebuilt/xp/`.
+
+Copy `dist/xp/anachron.exe` + a model to the XP box. In `cmd.exe`:
 
 ```
 anachron.exe --model model.gguf --sandbox work
 ```
 
 - Fully **static** — no DLLs to ship (imports only KERNEL32/ADVAPI32/msvcrt, all XP).
-- Subsystem 5.01, SSE2-only, no Vista+ APIs; the XP-safe threadpool patch is baked
-  into the linked `ggml-cpu.a`.
-- On the single-core M170 use `--max-iters` modestly; threading defaults are fine
-  (single core → the cond-var shim path isn't exercised).
-- **UNVERIFIED at runtime:** no wine / no XP box on the dev host, so the .exe has
-  never executed. Open risks to check on first real run: (1) the CPU backend
-  registers under static linking (model loads), (2) the XP threadpool shim behaves.
+- Subsystem 5.01, SSE2-only, no Vista+ APIs.
+- **Validated under Wine**: the .exe runs, parses args, loads a model and prefills.
+  This is the first confirmation it executes (previously objdump-only). Real
+  Pentium-M / XP hardware remains the final check.
+
+### Memory: the 32-bit ceiling (read before picking a model)
+
+A 32-bit process has ~2 GB of user address space, and the weights want one large
+contiguous buffer — so model choice is constrained:
+
+- **Use the q8 0.5B** (~640 MB). It is the model confirmed to *generate*. On a clean
+  2 GB XP boot it should fit; under Wine it failed to allocate only because Wine's
+  graphics libraries fragment the address space.
+- If the model fails to load with an allocation error, try `ANACHRON_MMAP=1`
+  (on 32-bit the default is mmap **off** — read into a heap buffer; the override flips
+  loading to memory-mapping, which may succeed where the buffer alloc didn't).
+- **1.5B models (~1.6 GB) will not fit** a 32-bit process — don't try them on XP.
+- A *smaller-than-q8* quant must be produced from the **f16 / safetensors** weights.
+  Requantizing *down from the q8 GGUF* (q4_0, q5_K_M) yields a model that loads but
+  generates nothing (the 0.5B degrades to immediate end-of-text), so don't requant q8.
 
 ## Rebuilding the model-backed binaries from scratch
 
 The per-target llama/ggml libs come from the Phase-0 spike builds
 (`spike-phase0/llama.cpp/build-antix-m32` and `build-xp`). If those are wiped, rebuild
-them per the recipes in `HANDOFF.md` before `make antix` / `make xp`.
+them per the recipes in `HANDOFF.md`. The XP libs are also vendored under `prebuilt/xp/`
+(see `make xp-vendor`), so `make xp` does not need `build-xp` present.

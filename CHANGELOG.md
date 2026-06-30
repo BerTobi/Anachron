@@ -7,6 +7,34 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-06-30
+
+### Fixed
+- Windows XP / antiX (32-bit) couldn't load a model at all: the weights were memory-mapped,
+  and a contiguous mmap of a multi-hundred-MB file fails in a 32-bit process's ~2 GB address
+  space (`MapViewOfFile failed: Not enough memory`). The 32-bit builds now read the model
+  into a heap buffer instead (mmap stays on for 64-bit); override with `ANACHRON_MMAP=0/1`.
+  This is why there was no working XP build — the exe ran but no model would load.
+
+### Added
+- Prebuilt, static `anachron.exe` is attached to the release: download it plus a model and
+  run on the XP box — no cross-compiler needed.
+- Vendored Windows-XP llama.cpp artifacts under `prebuilt/xp/` (4 static libs + headers,
+  ~10 MB) so `make xp` builds from a clean clone — the `spike-phase0/llama.cpp` checkout is
+  an embedded, untracked repo, so a clone otherwise had nothing to link. New `make xp-vendor`
+  refreshes them from a rebuilt `build-xp`.
+
+### Notes
+- **The XP build now actually runs** — validated under Wine (starts, parses args, loads a
+  model, prefills); first confirmation it executes (previously objdump-only). Real
+  Pentium-M / XP hardware is still the final check.
+- **32-bit model guidance** (see DEPLOY.md): use the **q8 0.5B** — it's the model confirmed
+  to generate and ~640 MB fits a clean 2 GB XP process (it failed only under Wine's
+  fragmented address space). 1.5B (~1.6 GB) will not fit a 32-bit process. A smaller-than-q8
+  quant must be built from f16/safetensors — requantizing *down* from the q8 GGUF (q4_0,
+  q5_K_M) produces a model that loads but generates nothing (the tiny model degrades to
+  immediate end-of-text).
+
 ## [0.4.3] - 2026-06-23
 
 ### Added
@@ -213,7 +241,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/BerTobi/Anachron/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/BerTobi/Anachron/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/BerTobi/Anachron/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/BerTobi/Anachron/compare/v0.4.0...v0.4.1

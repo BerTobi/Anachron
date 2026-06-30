@@ -196,6 +196,15 @@ extern "C" infer_ctx *infer_init(const char *gguf_path, int n_ctx) {
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = 0; /* CPU only — there is no GPU on the target */
 
+    /* On a 32-bit target (Windows XP, antiX i686) the ~2 GB user address space can't
+     * hold a contiguous mmap of a multi-hundred-MB model: MapViewOfFile/mmap fails with
+     * "not enough memory". Read the weights into a normal heap buffer instead. On 64-bit
+     * mmap is fine (and lazy), so keep it. Override with ANACHRON_MMAP=0/1. */
+    int want_mmap = (sizeof(void *) > 4);
+    const char *mm = getenv("ANACHRON_MMAP");
+    if (mm) want_mmap = (atoi(mm) != 0);
+    mparams.use_mmap = want_mmap ? true : false;
+
     /* Real model-load progress bar (the dominant cold-start cost). Owning the
      * callback also suppresses llama's default loader dots when piped. The callback
      * runs synchronously inside the load call, so a local load_state is fine. */
