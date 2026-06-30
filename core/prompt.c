@@ -190,18 +190,48 @@ int history_shrink(history *h) {
     return 0;  /* nothing left to shrink */
 }
 
+/* Lean prompt (ANACHRON_LEAN=1 / --lean): a terse system prompt + one demonstration,
+ * ~1/5 the tokens of the full pair. The slow part of a cold turn is prefilling the
+ * prompt, so on a Pentium-M this cuts first-turn latency ~5x. It keeps the essentials
+ * (one-tool-call form, the tool list, save-by-default, talk-vs-act) but drops the
+ * detailed rules/examples, so the 0.5B may be a bit less reliable on edits/recovery. */
+static const char *LEAN_SYSTEM_PROMPT =
+    "You are ANACHRON, a small local coding assistant. Be concise.\n"
+    "TALK: to greet, answer, or explain, reply in plain text (no tool).\n"
+    "ACT: emit exactly ONE tool call and nothing else, in this form:\n"
+    "<tool_call>{\"name\": \"<tool>\", \"arguments\": { ... }}</tool_call>\n"
+    "then you get the result and may act again or finish.\n"
+    "Tools: read_file{path}, write_file{path,content}, edit{path,old,new}, list_dir{path}, "
+    "run_command{cmd}, search{pattern}, glob{pattern}, final{message}. These are the ONLY tools.\n"
+    "When asked to write/create/make/code a program, script, function, or file: write_file it "
+    "to a sensible filename in ONE step, then confirm in a line - do not print the code first, "
+    "and do not run a file before creating it. Use plain text for \"show me\"/\"explain\".\n"
+    "Paths are relative to the working directory. When the task is done, call final.";
+
+static const char *LEAN_FEWSHOT =
+    IM_START "user\n" "hi" IM_END
+    IM_START "assistant\n"
+    "Hi! I can read, write, and run code in your working directory. What would you like to do?" IM_END
+    IM_START "user\n" "write a C function that adds two integers" IM_END
+    IM_START "assistant\n"
+    "<tool_call>{\"name\": \"write_file\", \"arguments\": {\"path\": \"add.c\", \"content\": \"int add(int a, int b) {\\n    return a + b;\\n}\\n\"}}</tool_call>" IM_END
+    IM_START "user\n<tool_response>\nWrote 36 bytes to add.c (syntax OK)\n</tool_response>" IM_END
+    IM_START "assistant\n" "Saved it to add.c." IM_END;
+
 void prompt_render(strbuf *out, history *h, int plan_enabled, const char *active_plan,
                    const char *project_context) {
+    const char *e = getenv("ANACHRON_LEAN");
+    int lean = (e && e[0] && e[0] != '0');
     sb_clear(out);
     sb_append(out, IM_START "system\n");
-    sb_append(out, SYSTEM_PROMPT);
+    sb_append(out, lean ? LEAN_SYSTEM_PROMPT : SYSTEM_PROMPT);
     if (plan_enabled) sb_append(out, PLAN_ADDENDUM);
     if (project_context && *project_context) {
         sb_append(out, "\n\nProject notes (from AGENTS.md):\n");
         sb_append(out, project_context);
     }
     sb_append(out, IM_END);
-    sb_append(out, FEWSHOT);
+    sb_append(out, lean ? LEAN_FEWSHOT : FEWSHOT);
     if (plan_enabled) sb_append(out, PLAN_FEWSHOT);
 
     for (size_t i = 0; i < h->count; i++) {

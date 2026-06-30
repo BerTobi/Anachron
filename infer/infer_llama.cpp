@@ -24,6 +24,13 @@
 
 #ifdef _WIN32
 #include <io.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>   /* GetStdHandle / GetFileType: reliable console detection */
 #define ANCH_ISATTY_ERR() _isatty(_fileno(stderr))
 #define ANCH_ISATTY_OUT() _isatty(_fileno(stdout))
 #else
@@ -50,6 +57,10 @@ struct infer_ctx {
     int                       bar_active;       /* per-token bar engaged for the CURRENT decode (gated) */
     int                       out_tty;          /* stdout is an interactive terminal (set once) */
     double                    ptok_min_sec;     /* show the per-token bar only above this decode time */
+    /* persisted prompt cache: the static system+few-shot prefill KV is saved to disk and
+     * reloaded on a cold start, so the slow first-turn prefill is paid once, not every run */
+    std::string               cache_path;       /* KV state file (empty = disabled) */
+    int                       cache_saved;      /* saved once this process already */
 };
 
 static void quiet_log(enum ggml_log_level level, const char *text, void *ud) {
@@ -68,7 +79,25 @@ static void quiet_log(enum ggml_log_level level, const char *text, void *ud) {
  * just streams (no bar). When stderr is not a TTY (pipes, the test harness) we draw
  * nothing - and because we still own the load callback, that also suppresses llama's
  * own loader dots, keeping piped output clean. */
-static bool stderr_is_tty(void) { return ANCH_ISATTY_ERR() != 0; }
+static bool stderr_is_tty(void) {
+#ifdef _WIN32
+    /* msvcrt's _isatty can report false on a real cmd.exe console, which would wrongly
+     * suppress the progress bars. Fall back to asking Win32 whether the stderr handle is
+     * a character device (= console). Both APIs are XP-safe. */
+    if (ANCH_ISATTY_ERR()) return true;
+    return GetFileType(GetStdHandle(STD_ERROR_HANDLE)) == FILE_TYPE_CHAR;
+#else
+    return ANCH_ISATTY_ERR() != 0;
+#endif
+}
+
+/* Whether to draw the cold-start progress bars. ANACHRON_PROGRESS=1/0 forces it on/off
+ * (escape hatch for terminals we mis-detect); otherwise it follows the tty check. */
+static bool progress_on(void) {
+    const char *e = getenv("ANACHRON_PROGRESS");
+    if (e) return atoi(e) != 0;
+    return stderr_is_tty();
+}
 
 static void draw_bar(const char *label, float frac, double eta, long cur, long total) {
     if (frac < 0) frac = 0;
@@ -210,7 +239,7 @@ extern "C" infer_ctx *infer_init(const char *gguf_path, int n_ctx) {
      * runs synchronously inside the load call, so a local load_state is fine. */
     load_state ls;
     ls.t0 = -1.0;
-    ls.tty = stderr_is_tty();
+    ls.tty = progress_on();
     mparams.progress_callback = load_progress_cb;
     mparams.progress_callback_user_data = &ls;
 
@@ -252,6 +281,39 @@ extern "C" infer_ctx *infer_init(const char *gguf_path, int n_ctx) {
         c->ptok_min_sec = (e && atof(e) > 0.0) ? atof(e) : 1.5;
     }
     llama_set_abort_callback(c->ctx, decode_abort_cb, c);
+
+    /* Persisted prompt cache. Default path: <model>.<size>.anchkv (the size keys it to
+     * the model so a different model uses a different file). ANACHRON_PROMPT_CACHE
+     * overrides with a path, or "0"/"" to disable. The reload seeds c->cached, and the
+     * n_keep prefix-match (in infer_generate) then reuses the matching prefill prefix -
+     * so a changed prompt degrades safely to re-prefilling the divergent tail. */
+    c->cache_saved = 0;
+    {
+        const char *e = getenv("ANACHRON_PROMPT_CACHE");
+        if (e) {
+            c->cache_path = (e[0] == '\0' || (e[0] == '0' && e[1] == '\0')) ? "" : e;
+        } else {
+            long sz = 0;
+            FILE *mf = fopen(gguf_path, "rb");
+            if (mf) { fseek(mf, 0, SEEK_END); sz = ftell(mf); fclose(mf); }
+            char suffix[64];
+            snprintf(suffix, sizeof suffix, ".%ld.anchkv", sz);
+            c->cache_path = std::string(gguf_path) + suffix;
+        }
+    }
+    if (!c->cache_path.empty()) {
+        FILE *cf = fopen(c->cache_path.c_str(), "rb");   /* probe first: no error log when absent */
+        if (cf) {
+            fclose(cf);
+            size_t cap = (size_t)llama_n_ctx(ctx), n = 0;
+            std::vector<llama_token> buf(cap);
+            if (llama_state_load_file(ctx, c->cache_path.c_str(), buf.data(), cap, &n) && n > 0) {
+                c->cached.assign(buf.begin(), buf.begin() + (std::ptrdiff_t)n);
+                if (ls.tty)
+                    fprintf(stderr, "prompt cache: loaded %zu cached prefill tokens (the matching prefix is reused)\n", n);
+            }
+        }
+    }
     return c;
 }
 
@@ -311,7 +373,7 @@ extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *gram
          * (the slow first turn). Incremental turns reuse the KV cache (large n_keep,
          * few new tokens), so the bar stays out of the way. */
         const int n_new_total = n_tok - n_keep;
-        const bool show_pf = stderr_is_tty() && n_new_total > 64;
+        const bool show_pf = progress_on() && n_new_total > 64;
         const double pf_t0 = show_pf ? plat_time_sec() : 0.0;
         for (int off = n_keep; off < n_tok; off += CHUNK) {
             if (interrupt_pending()) { if (show_pf) clear_bar(); return 0; }   /* aborted mid-prompt */
@@ -332,6 +394,15 @@ extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *gram
             }
         }
         if (show_pf) clear_bar();
+    }
+
+    /* Persist the prefill KV once per cold start, but only when this turn actually did
+     * the expensive prefill (>64 new tokens) - i.e. no cache covered it. Captures the
+     * full system+few-shot(+task) prefix so the next cold start reloads it in seconds
+     * instead of recomputing the ~minutes-long static prefill. */
+    if (!c->cache_saved && !c->cache_path.empty() && (n_tok - n_keep) > 64) {
+        c->cache_saved = 1;
+        llama_state_save_file(c->ctx, c->cache_path.c_str(), c->cached.data(), c->cached.size());
     }
 
     /* Greedy + optional LAZY grammar. Lazy so the model can just talk: the grammar

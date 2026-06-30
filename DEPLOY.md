@@ -68,6 +68,24 @@ contiguous buffer — so model choice is constrained:
   Requantizing *down from the q8 GGUF* (q4_0, q5_K_M) yields a model that loads but
   generates nothing (the 0.5B degrades to immediate end-of-text), so don't requant q8.
 
+### Speed on a Pentium-M (the cold start is the slow part)
+
+A Pentium-M prefills the ~1200-token prompt at ~5 s/token — roughly **100 minutes** before
+the first reply on a cold start. Two settings cut this dramatically; use both on the M170:
+
+- **Prompt cache (on by default).** The first cold turn saves its prefill to
+  `<model>.<size>.anchkv`; every later session reloads it in seconds instead of
+  re-prefilling. So you pay the long prefill **once per model**, not every run. Relocate
+  with `ANACHRON_PROMPT_CACHE=<path>`, disable with `ANACHRON_PROMPT_CACHE=0`. (Switching
+  models or prompt mode rebuilds the cache once; delete the `.anchkv` if you swap a model
+  file in place.)
+- **Lean prompt** — `set ANACHRON_LEAN=1` before running. ~430 vs ~1190 prompt tokens, so
+  the *first* (uncached) turn prefills ~2.75x faster (~40 min vs ~100). Keeps tool-calls and
+  save-by-default; slightly terser guidance, so complex edits may need a nudge.
+
+Within a session it's already incremental: only the first turn prefills the whole prompt;
+later turns reuse the KV cache and prefill just your new message.
+
 ## Rebuilding the model-backed binaries from scratch
 
 The per-target llama/ggml libs come from the Phase-0 spike builds

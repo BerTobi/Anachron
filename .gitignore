@@ -33,3 +33,6 @@ spike-phase0/llama.cpp/
 
 # Vendored prebuilt Windows-XP llama.cpp artifacts (so `make xp` builds from a clean clone)
 !prebuilt/xp/lib/*.a
+
+# Prompt-cache KV state files (per-model, regenerated on demand)
+*.anchkv

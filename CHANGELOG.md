@@ -7,6 +7,31 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-06-30
+
+### Added
+- **Persisted prompt cache** — the slow first-turn prefill (the static system+few-shot
+  prefix) is saved to disk via `llama_state_save_file` and reloaded on the next cold start
+  via `llama_state_load_file`, so it's paid once instead of every run. On the dev host a
+  cold turn went 78s → 2s on the next run; in the XP build under Wine, 251s → 8s. Default
+  path `<model>.<size>.anchkv` (keyed to the model); `ANACHRON_PROMPT_CACHE=<path>` to
+  relocate or `=0` to disable. A changed prompt degrades safely (the `n_keep` prefix match
+  re-prefills only the divergent tail). This is the fix for the ~100-min cold start on a
+  Pentium-M: build the cache once, then every later session starts in seconds.
+- **Lean prompt mode** (`ANACHRON_LEAN=1`) — a terse system prompt + one demonstration,
+  ~430 vs ~1190 prompt tokens (~2.75x), so the *first* (uncached) turn prefills ~2.75x
+  faster on slow hardware. Keeps the essentials (one-tool-call form, the tool list,
+  save-by-default, talk-vs-act); validated that the 0.5B still writes files correctly.
+  Trade-off: fewer rules/examples, so it may be slightly less reliable on edits/recovery.
+- Progress-bar console detection on Windows now falls back to `GetFileType` when msvcrt's
+  `_isatty` reports false on a real console, and `ANACHRON_PROGRESS=1/0` force-overrides
+  the load/prefill bars either way.
+
+### Changed
+- The stub and real Windows builds no longer share a filename: `make win` →
+  `anachron-stub.exe` (no-model Win32-layer test, prints a notice), `make xp` →
+  `dist/xp/anachron-xp.exe` (real llama backend). Prevents running the stub by mistake.
+
 ## [0.4.4] - 2026-06-30
 
 ### Fixed
@@ -241,7 +266,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.4.5...HEAD
+[0.4.5]: https://github.com/BerTobi/Anachron/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/BerTobi/Anachron/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/BerTobi/Anachron/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/BerTobi/Anachron/compare/v0.4.1...v0.4.2
