@@ -196,7 +196,7 @@ VER    := $(shell sed -n 's/^\#define ANACHRON_VERSION "\(.*\)"/\1/p' core/versi
 BUNDLE := anachron-$(VER)-winxp
 bundle: xp
 	@rm -rf dist/$(BUNDLE) dist/$(BUNDLE).zip
-	@mkdir -p dist/$(BUNDLE)/grammars dist/$(BUNDLE)/work
+	@mkdir -p dist/$(BUNDLE)/grammars dist/$(BUNDLE)/work dist/$(BUNDLE)/models
 	cp $(XP_DIST)/anachron-xp.exe dist/$(BUNDLE)/anachron.exe
 	cp grammars/toolcall.gbnf grammars/toolcall-plan.gbnf dist/$(BUNDLE)/grammars/
 	@sed 's/$$/\r/' packaging/README-winxp.txt   > dist/$(BUNDLE)/README.txt          # CRLF for Notepad

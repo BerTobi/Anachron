@@ -7,6 +7,23 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-07-01
+
+### Added
+- **Double-click to run.** Launching with no arguments (e.g. double-clicking the exe on
+  XP) now starts an interactive first-run **setup**: it lists the `.gguf` models it finds
+  (in a `./models` folder if present, else the current folder), lets you pick one by
+  number (or type a path), asks for the working folder and the lean setting, and offers to
+  save them to `agent.json` so the next launch skips setup. A double-clicked window no
+  longer flashes shut on a bad/missing model — it pauses on the error so you can read it.
+- **`/model` with no argument lists the available models** and lets you pick one by number
+  to hot-swap (giving a path still works). Searched in `./models` if present, else the
+  current folder; sorted alphabetically so the numbering is stable.
+- **`--lean` flag** (same as `ANACHRON_LEAN=1`): terse system prompt for a ~2.7x faster
+  first turn. `lean` is now a real CLI/config option threaded through `agent_config`
+  (no longer read via `getenv` inside core), and `ANACHRON_LEAN` parses as a strict boolean
+  (only `1`/`true`/`yes`/`on` enable it).
+
 ## [0.5.1] - 2026-07-01
 
 ### Fixed
@@ -321,7 +338,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/BerTobi/Anachron/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/BerTobi/Anachron/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/BerTobi/Anachron/compare/v0.4.5...v0.5.0
 [0.4.5]: https://github.com/BerTobi/Anachron/compare/v0.4.4...v0.4.5

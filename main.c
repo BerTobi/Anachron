@@ -484,6 +484,7 @@ static void usage(const char *prog) {
         "  --no-plan         force-disable the plan tool (overrides \"plan\": true in config)\n"
         "  --color/--no-color  force colour on/off (default: on for an interactive TTY)\n"
         "  --yolo              skip the y/N permission gate before file writes / commands\n"
+        "  --lean              terse system prompt: ~2.7x faster first turn on slow hardware\n"
         "  --log PATH        append a debug log (prompts, raw model output, tool results)\n"
         "  -V, --version     print the version and exit\n"
         "Defaults may also be set in agent.json / .anachron.json in the current directory\n"
@@ -841,6 +842,84 @@ static void cmd_undo(agent_session *s, const char *sandbox) {
     free(abs);
 }
 
+/* Strip a trailing newline / carriage return from a fgets'd line, in place. */
+static void chomp(char *s) {
+    size_t n = strlen(s);
+    while (n && (s[n - 1] == '\n' || s[n - 1] == '\r')) s[--n] = '\0';
+}
+
+static int cmp_cstr(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/* Does the name end in ".gguf" (case-insensitive)? Our practical "is it a model" test. */
+static int ends_gguf(const char *nm) {
+    size_t L = strlen(nm);
+    if (L < 5) return 0;
+    const char *e = nm + L - 5;
+    return e[0] == '.' && (e[1] | 32) == 'g' && (e[2] | 32) == 'g'
+                       && (e[3] | 32) == 'u' && (e[4] | 32) == 'f';
+}
+
+/* Where to look for models: a ./models folder if it exists, else the current folder. */
+static const char *model_dir(void) {
+    plat_dirlist dl;
+    if (plat_list_dir("models", &dl) == 0) { plat_dirlist_free(&dl); return "models"; }
+    return ".";
+}
+
+/* Collect *.gguf paths from `dir` (prefixed with "dir/" unless dir is "."). Returns the
+ * count; *out is a malloc'd array of malloc'd path strings (caller frees each + the array). */
+static int list_gguf(const char *dir, char ***out) {
+    plat_dirlist dl;
+    *out = NULL;
+    if (plat_list_dir(dir, &dl) != 0) return 0;
+    char **v = NULL; int n = 0;
+    for (size_t i = 0; i < dl.count; i++) {
+        if (dl.is_dir[i] || !ends_gguf(dl.names[i])) continue;
+        char path[1024];
+        int r = (strcmp(dir, ".") == 0)
+                ? snprintf(path, sizeof path, "%s", dl.names[i])
+                : snprintf(path, sizeof path, "%s/%s", dir, dl.names[i]);
+        if (r < 0 || (size_t)r >= sizeof path) continue;   /* skip a name too long to hold */
+        char **nv = realloc(v, (size_t)(n + 1) * sizeof *v);
+        if (!nv) break;
+        v = nv; v[n++] = xstrdup(path);
+    }
+    plat_dirlist_free(&dl);
+    if (n > 1) qsort(v, (size_t)n, sizeof *v, cmp_cstr);   /* alphabetical: stable numbering */
+    *out = v;
+    return n;
+}
+
+/* List the models found nearby and let the user pick one by number (or type a path).
+ * Returns a malloc'd path, or NULL if the user entered nothing / EOF. Reads a plain line
+ * (callers use this only where stdin is in cooked mode). */
+static char *pick_model(void) {
+    const char *dir = model_dir();
+    const char *where = strcmp(dir, ".") == 0 ? "this folder" : dir;
+    char **v; int n = list_gguf(dir, &v);
+    if (n > 0) {
+        fprintf(stdout, "Models found in %s:\n", where);
+        for (int i = 0; i < n; i++) fprintf(stdout, "  %d) %s\n", i + 1, v[i]);
+        fputs("Choose a number, or type a .gguf path: ", stdout);
+    } else {
+        fprintf(stdout, "No .gguf models found in %s. Type a model path: ", where);
+    }
+    fflush(stdout);
+    char buf[512]; char *pick = NULL;
+    if (fgets(buf, sizeof buf, stdin)) {
+        chomp(buf);
+        if (buf[0]) {
+            char *end; long k = strtol(buf, &end, 10);
+            pick = (n > 0 && *end == '\0' && k >= 1 && k <= n) ? xstrdup(v[k - 1]) : xstrdup(buf);
+        }
+    }
+    for (int i = 0; i < n; i++) free(v[i]);
+    free(v);
+    return pick;
+}
+
 /* Handle a line beginning with '/'. Returns CMD_NOT_A_COMMAND if the line is not
  * a recognized command and should be sent to the model verbatim. `backend_slot`
  * and `ctx_tokens` let /model swap the inference backend in place. */
@@ -891,19 +970,20 @@ static cmd_result handle_command(const char *line, agent_session *s,
     }
 
     if (strcmp(verb, "/model") == 0) {
-        if (!arg[0]) {
-            fprintf(stdout, "usage: /model <path-to-gguf>\n");
-            return CMD_HANDLED;
-        }
-        infer_ctx *nb = infer_init(arg, ctx_tokens);
+        /* With a path, switch to it; with no arg, list the models nearby and pick one. */
+        char *chosen = arg[0] ? xstrdup(arg) : pick_model();
+        if (!chosen) return CMD_HANDLED;   /* nothing chosen */
+        infer_ctx *nb = infer_init(chosen, ctx_tokens);
         if (!nb) {
-            fprintf(stdout, "could not load model %s (keeping the current one)\n", arg);
+            fprintf(stdout, "could not load model %s (keeping the current one)\n", chosen);
+            free(chosen);
             return CMD_HANDLED;
         }
         infer_free(*backend_slot);
         *backend_slot = nb;
         s->cfg.infer = nb;          /* run_turn reads the backend from the session's cfg */
-        fprintf(stdout, "switched to model %s\n", arg);
+        fprintf(stdout, "switched to model %s\n", chosen);
+        free(chosen);
         return CMD_HANDLED;
     }
 
@@ -1029,6 +1109,63 @@ static int cfg_bool(const json_value *o, const char *key, int dflt) {
     return (v && v->type == JSON_BOOL) ? v->boolean : dflt;
 }
 
+/* Write a string as a JSON value body, escaping backslashes and quotes — so a Windows
+ * path like C:\models\x.gguf lands in agent.json as valid JSON. */
+static void json_put_escaped(FILE *f, const char *s) {
+    for (; *s; s++) {
+        if (*s == '\\' || *s == '"') fputc('\\', f);
+        fputc(*s, f);
+    }
+}
+
+/* First-run setup: when launched with no model (e.g. double-clicked), ask for the model,
+ * sandbox and lean setting right here, and offer to save them to agent.json so the next
+ * launch skips this. Returns 1 with the model and sandbox out-params (malloc'd) set, or
+ * 0 to cancel. Reads plain lines (the raw-mode editor isn't active yet). */
+static int run_setup(char **model_out, char **sandbox_out, int *lean_out) {
+    char buf[512];
+    fputs("\nANACHRON " ANACHRON_VERSION " - setup\n"
+          "No model configured. Answer a few questions to start (Ctrl+C to quit).\n\n", stdout);
+
+    char *model = NULL;
+    for (;;) {
+        char *p = pick_model();                       /* lists nearby .gguf, or asks for a path */
+        if (!p) return 0;                             /* nothing entered / EOF -> cancel */
+        FILE *t = fopen(p, "rb");
+        if (!t) { fprintf(stdout, "  Can't open \"%s\" - try again.\n", p); free(p); continue; }
+        fclose(t);
+        model = p;
+        break;
+    }
+
+    fputs("Working folder the agent may read/write [work]: ", stdout); fflush(stdout);
+    buf[0] = '\0';
+    if (fgets(buf, sizeof buf, stdin)) chomp(buf);
+    char *sandbox = xstrdup(buf[0] ? buf : "work");
+    plat_mkdir(sandbox);
+
+    fputs("Faster first turn (lean prompt, slightly terser)? [y/N]: ", stdout); fflush(stdout);
+    int lean = 0;
+    if (fgets(buf, sizeof buf, stdin)) lean = (buf[0] == 'y' || buf[0] == 'Y');
+
+    fputs("Save these to agent.json so setup is skipped next time? [Y/n]: ", stdout); fflush(stdout);
+    if (fgets(buf, sizeof buf, stdin) && buf[0] != 'n' && buf[0] != 'N') {
+        FILE *f = fopen("agent.json", "w");
+        if (f) {
+            fputs("{\n  \"model\": \"", f);   json_put_escaped(f, model);
+            fputs("\",\n  \"sandbox\": \"", f); json_put_escaped(f, sandbox);
+            fprintf(f, "\",\n  \"lean\": %s\n}\n", lean ? "true" : "false");
+            fclose(f);
+            fputs("  Saved agent.json.\n", stdout);
+        } else {
+            fputs("  (Could not write agent.json; continuing anyway.)\n", stdout);
+        }
+    }
+    fputc('\n', stdout);
+    *model_out = model; *sandbox_out = sandbox; *lean_out = lean;
+    return 1;
+}
+
 /* Read a numeric key; returns `dflt` if absent or not a number. */
 static int cfg_int(const json_value *o, const char *key, int dflt) {
     const json_value *v = json_obj_get(o, key);
@@ -1049,6 +1186,7 @@ int main(int argc, char **argv) {
     int want_color = 1;                  /* gated by TTY + platform below; --no-color forces off */
     int color_force = 0;                 /* --color forces colour even when not a TTY (pipes) */
     int yolo = env_truthy("ANACHRON_YOLO");   /* skip the permission gate (only 1/true/yes/on) */
+    int lean = env_truthy("ANACHRON_LEAN");   /* terse prompt for a faster first turn */
 
     /* Config file (agent.json / .anachron.json) sets defaults; CLI flags below
      * override them. String values are xstrdup'd so they outlive the parsed JSON. */
@@ -1073,6 +1211,7 @@ int main(int argc, char **argv) {
         use_grammar   = cfg_bool(conf, "grammar_enabled", use_grammar);
         want_color    = cfg_bool(conf, "color", want_color);
         yolo          = cfg_bool(conf, "yolo", yolo);
+        lean          = cfg_bool(conf, "lean", lean);
         json_free(conf);
     }
 
@@ -1105,6 +1244,8 @@ int main(int argc, char **argv) {
             color_force = 1;
         } else if (strcmp(a, "--yolo") == 0 || strcmp(a, "--no-confirm") == 0) {
             yolo = 1;
+        } else if (strcmp(a, "--lean") == 0) {
+            lean = 1;
         } else if (strcmp(a, "--log") == 0 && i + 1 < argc) {
             log_path = argv[++i];
         } else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
@@ -1175,6 +1316,17 @@ int main(int argc, char **argv) {
      * BOTH targets: ANSI escapes on a POSIX terminal, the Win32 Console API on the XP
      * console (which has no ANSI). ui_console_init() below confirms a real console and
      * turns colour back off when output is redirected to a file/pipe. */
+    /* First-run setup when launched with no model (e.g. double-clicked on XP): ask for the
+     * model / sandbox / lean here, then continue. Must run before load_project_context()
+     * (which reads AGENTS.md from the sandbox) and before infer_init(). */
+    if (!model && task.len == 0 && plat_isatty_stdin()) {
+        char *sm = NULL, *ss = NULL;
+        if (run_setup(&sm, &ss, &lean)) {
+            free(owned_model);   owned_model   = sm; model   = sm;
+            free(owned_sandbox); owned_sandbox = ss; sandbox = ss;
+        }
+    }
+
     int use_color = color_force || (want_color && plat_isatty_stdout());
 
     char *project_context = load_project_context(sandbox);
@@ -1186,7 +1338,12 @@ int main(int argc, char **argv) {
 
     infer_ctx *backend = infer_init(model, ctx);
     if (!backend) {
-        fprintf(stderr, "anachron: failed to initialize inference backend\n");
+        if (!model)
+            fprintf(stderr, "anachron: no model. Pass --model PATH, or just launch it to set one up.\n");
+        else
+            fprintf(stderr, "anachron: failed to load the model (%s). Check it's a valid GGUF that fits.\n", model);
+        /* Keep a double-clicked console window open long enough to read the error. */
+        if (plat_isatty_stdin()) { fputs("\nPress Enter to exit.\n", stderr); (void)getchar(); }
         free(grammar); free(grammar_act); free(project_context);
         free(owned_model); free(owned_sandbox); free(owned_grammar); free(owned_log);
         if (logf) fclose(logf);
@@ -1209,6 +1366,7 @@ int main(int argc, char **argv) {
     cfg.verify_cc = verify_cc;
     cfg.plan_enabled = plan_enabled;
     cfg.project_context = project_context;
+    cfg.lean = lean;   /* terse prompt (--lean / ANACHRON_LEAN); faster first-turn prefill */
     cfg.diff_colour = 0;   /* diff text stays plain; ui_diff() colours it per-line (both backends) */
     cfg.on_diff = ui_diff;
     cfg.on_log = logf ? ui_log : NULL;

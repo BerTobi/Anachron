@@ -208,7 +208,7 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
          * history one step and re-render — repeat until it fits or nothing is left
          * to drop. This is what keeps a long session from wedging the backend. */
         for (;;) {
-            prompt_render(&prompt, h, cfg->plan_enabled, active_plan, cfg->project_context);
+            prompt_render(&prompt, h, cfg->plan_enabled, active_plan, cfg->project_context, cfg->lean);
             if (prompt.len <= max_prompt_chars) break;
             if (!history_shrink(h)) break;
         }

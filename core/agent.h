@@ -26,6 +26,7 @@ typedef struct {
                                   capable model via remote/GPU inference. */
     const char *project_context; /* contents of an AGENTS.md/CRUSH.md, injected into the
                                     system prompt; NULL if none. */
+    int         lean;            /* 1 = terse (lean) system prompt + few-shot; faster prefill */
     int         diff_colour;     /* 1 = ANSI-colour the diff shown on edits */
     void      (*on_diff)(const char *diff, void *ud); /* nullable: diff shown on edit */
     void      (*on_log)(const char *text, void *ud);  /* nullable debug log sink */

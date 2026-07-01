@@ -45,6 +45,6 @@ int history_shrink(history *h);
  * a just-in-time plan reminder is injected right before the assistant turn. Both
  * are off in the default build. */
 void prompt_render(strbuf *out, history *h, int plan_enabled, const char *active_plan,
-                   const char *project_context);
+                   const char *project_context, int lean);
 
 #endif /* ANACHRON_PROMPT_H */

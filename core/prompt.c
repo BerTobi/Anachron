@@ -219,9 +219,7 @@ static const char *LEAN_FEWSHOT =
     IM_START "assistant\n" "Saved it to add.c." IM_END;
 
 void prompt_render(strbuf *out, history *h, int plan_enabled, const char *active_plan,
-                   const char *project_context) {
-    const char *e = getenv("ANACHRON_LEAN");
-    int lean = (e && e[0] && e[0] != '0');
+                   const char *project_context, int lean) {
     sb_clear(out);
     sb_append(out, IM_START "system\n");
     sb_append(out, lean ? LEAN_SYSTEM_PROMPT : SYSTEM_PROMPT);
