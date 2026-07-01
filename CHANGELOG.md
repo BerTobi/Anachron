@@ -7,6 +7,20 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-01
+
+### Fixed
+- The prefill ("reading prompt") progress bar now appears immediately and advances
+  smoothly on slow hardware. It was redrawn only *between* 32-token decode batches — on a
+  Pentium-M a batch is ~2-3 minutes, so the bar took minutes to appear and then jumped
+  once per batch. It's now driven by the decode abort-callback (which fires hundreds of
+  times per batch), interpolating progress by a per-token time estimate: a 0% frame shows
+  at once, a tiny 4-token warm-up batch calibrates the rate, then the bar moves ~every
+  150 ms regardless of batch size (measured ~1074 distinct positions across a 1190-token
+  prefill, vs ~37 before). The 32-token batch size — and prefill throughput — is unchanged.
+- Ctrl+C during prefill is now felt mid-batch (via the same callback) and handled as a
+  clean interrupt, instead of only being checked at each 32-token batch boundary.
+
 ## [0.5.0] - 2026-07-01
 
 Phase 1 of the UI-polish plan: make it read like a real agent harness, not a toy —
@@ -307,7 +321,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/BerTobi/Anachron/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/BerTobi/Anachron/compare/v0.4.5...v0.5.0
 [0.4.5]: https://github.com/BerTobi/Anachron/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/BerTobi/Anachron/compare/v0.4.3...v0.4.4

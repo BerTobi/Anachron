@@ -57,6 +57,16 @@ struct infer_ctx {
     int                       bar_active;       /* per-token bar engaged for the CURRENT decode (gated) */
     int                       out_tty;          /* stdout is an interactive terminal (set once) */
     double                    ptok_min_sec;     /* show the per-token bar only above this decode time */
+    /* prefill bar, driven by the abort_callback so it moves smoothly WITHIN a decode batch
+     * (a 32-token batch is minutes on a Pentium-M; the callback fires ~hundreds of times per
+     * batch, so we interpolate progress by time instead of jumping once per batch) */
+    int                       pf_active;        /* prefill bar engaged */
+    long                      pf_base;          /* tokens prefilled before the current batch */
+    long                      pf_total;         /* total tokens to prefill this turn */
+    int                       pf_batch;         /* size of the current batch */
+    double                    pf_t0;            /* prefill start (for ETA) */
+    double                    pf_batch_t0;      /* current batch start (for intra-batch interp) */
+    double                    pf_tok_sec;       /* per-token prefill seconds (last batch); size-agnostic */
     /* persisted prompt cache: the static system+few-shot prefill KV is saved to disk and
      * reloaded on a cold start, so the slow first-turn prefill is paid once, not every run */
     std::string               cache_path;       /* KV state file (empty = disabled) */
@@ -203,8 +213,24 @@ static bool decode_abort_cb(void *data) {
             double frac = (c->last_decode_sec > 0) ? el / c->last_decode_sec : 0.0;
             ptok_bar_draw(frac, c->last_decode_sec - el);
         }
+    } else if (c->pf_active) {
+        /* Prefill bar: update WITHIN the batch by interpolating on time (a batch is minutes
+         * on slow hardware), so it moves every ~150ms instead of jumping once per 32 tokens. */
+        double now = plat_time_sec();
+        if (now - c->bar_last_draw >= 0.15) {
+            c->bar_last_draw = now;
+            double batch_est = c->pf_tok_sec * (double)c->pf_batch;
+            double intra = (batch_est > 0.0) ? (now - c->pf_batch_t0) / batch_est : 0.0;
+            if (intra > 1.0) intra = 1.0;
+            double done = (double)c->pf_base + intra * (double)c->pf_batch;
+            if (done > (double)c->pf_total) done = (double)c->pf_total;
+            double frac = c->pf_total > 0 ? done / (double)c->pf_total : 0.0;
+            double eld = now - c->pf_t0;
+            double eta = (frac > 0.02) ? eld * (1.0 - frac) / frac : -1.0;
+            draw_bar("reading prompt", (float)frac, eta, (long)done, c->pf_total);
+        }
     }
-    return false;   /* false => keep computing (Ctrl+C handling added in step 3) */
+    return false;   /* false => keep computing */
 }
 
 static int env_threads(void) {
@@ -275,6 +301,8 @@ extern "C" infer_ctx *infer_init(const char *gguf_path, int n_ctx) {
     c->last_decode_sec = 0.0;
     c->bar_last_draw = 0.0;
     c->bar_active = 0;
+    c->pf_active = 0; c->pf_base = 0; c->pf_total = 0; c->pf_batch = 0;
+    c->pf_t0 = 0.0; c->pf_batch_t0 = 0.0; c->pf_tok_sec = 0.0;
     c->out_tty = (ANCH_ISATTY_OUT() != 0);
     {   /* per-token bar engages above this decode time; default 1.5s (~< 0.66 tok/s) */
         const char *e = getenv("ANACHRON_PTOK_MIN_SEC");
@@ -366,33 +394,45 @@ extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *gram
      * turn on slow hardware) takes effect promptly. Cached tokens are pushed per
      * chunk, so an aborted decode leaves c->cached consistent with the KV cache. */
     {
-        const int CHUNK = 32;   /* small enough that Ctrl+C during a slow prompt
-                                   decode is felt within a few seconds, big enough
-                                   that per-batch overhead stays negligible */
-        /* Prefill progress bar: only when there's a substantial prefix to process
-         * (the slow first turn). Incremental turns reuse the KV cache (large n_keep,
-         * few new tokens), so the bar stays out of the way. */
+        const int CHUNK = 32;   /* batch size keeps prefill throughput up (compute-bound on a
+                                   Pentium-M). The bar no longer depends on it: the abort_callback
+                                   fires many times per batch and interpolates progress by time,
+                                   so the bar moves every ~150ms and Ctrl+C is felt mid-batch. */
+        /* Prefill progress bar: only when there's a substantial prefix to process (the slow
+         * first turn). Incremental turns reuse the KV cache (few new tokens) and skip it. */
         const int n_new_total = n_tok - n_keep;
         const bool show_pf = progress_on() && n_new_total > 64;
-        const double pf_t0 = show_pf ? plat_time_sec() : 0.0;
+        c->pf_active = show_pf; c->pf_total = n_new_total; c->pf_base = 0; c->pf_batch = 0;
+        c->pf_t0 = plat_time_sec(); c->pf_tok_sec = 0.0; c->bar_last_draw = 0.0;
+        if (show_pf) draw_bar("reading prompt", 0.0f, -1.0, 0, (long)n_new_total); /* appear at once */
         for (int off = n_keep; off < n_tok; off += CHUNK) {
-            if (interrupt_pending()) { if (show_pf) clear_bar(); return 0; }   /* aborted mid-prompt */
-            int n_new = (n_tok - off < CHUNK) ? (n_tok - off) : CHUNK;
+            if (interrupt_pending()) { c->pf_active = 0; if (show_pf) clear_bar(); return 0; }
+            /* A small first batch calibrates the per-token rate fast, so the bar starts moving
+             * within seconds instead of sitting at 0% for the whole first 32-token batch. */
+            int want = (off == n_keep) ? 4 : CHUNK;
+            int n_new = (n_tok - off < want) ? (n_tok - off) : want;
             llama_batch batch = llama_batch_get_one(toks.data() + off, n_new);
-            if (llama_decode(c->ctx, batch) != 0) {
+            c->pf_batch = n_new; c->pf_batch_t0 = plat_time_sec();
+            int dec = llama_decode(c->ctx, batch);
+            double bsec = plat_time_sec() - c->pf_batch_t0;
+            if (n_new > 0 && bsec > 0.0) c->pf_tok_sec = bsec / (double)n_new;
+            if (dec != 0) {
+                c->pf_active = 0;
+                if (interrupt_pending()) { c->cached.clear(); if (show_pf) clear_bar(); return 0; }
                 if (show_pf) clear_bar();
                 fprintf(stderr, "infer_llama: decode (prompt) failed\n");
                 return -1;
             }
             for (int i = off; i < off + n_new; i++) c->cached.push_back(toks[i]);
-            if (show_pf) {
-                long done = (long)(off + n_new - n_keep);
-                double frac = (double)done / (double)n_new_total;
-                double el = plat_time_sec() - pf_t0;
+            c->pf_base = (long)(off + n_new - n_keep);
+            if (show_pf) {   /* exact frame at the batch boundary */
+                double frac = (double)c->pf_base / (double)n_new_total;
+                double el = plat_time_sec() - c->pf_t0;
                 double eta = (frac > 0.02) ? el * (1.0 - frac) / frac : -1.0;
-                draw_bar("reading prompt", (float)frac, eta, done, (long)n_new_total);
+                draw_bar("reading prompt", (float)frac, eta, c->pf_base, (long)n_new_total);
             }
         }
+        c->pf_active = 0;
         if (show_pf) clear_bar();
     }
 
