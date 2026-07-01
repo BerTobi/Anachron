@@ -7,6 +7,30 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-07-01
+
+Phase 2 of the UI-polish plan: the transcript structure that says "real harness" —
+who is speaking, what changed, and how full the context is, at a glance.
+
+### Added
+- **End-of-turn status band.** The `(Ns - C ctx + G gen tokens)` footer is now a one-line
+  muted band: `── model · ctx N% · G tok · time` (ASCII `--`/`|` on the XP console). The
+  ctx figure — the turn's final prompt as a share of the context window — turns amber at
+  80% and adds a "context nearly full — /new starts a fresh conversation" hint at 90%,
+  so a filling 4096-token window is visible before it overflows. Durations over a minute
+  read `12m34s`. The model name follows `/model` swaps.
+- **Role-gutter message blocks.** Every reply block now opens with an amber `anachron`
+  gutter label (printed once per turn, before the first visible output — text or tool
+  call), the counterpart of the `you>` prompt, which is now blue. The transcript always
+  says who is speaking. With the label in place the `== final ==` banner is gone: the
+  final reply is simply the turn's last block, indented like streamed text, with the
+  status band closing the turn.
+- **Per-edit `+N -M` diff stat.** The `Edited file:` header of every shown diff now
+  carries the added/removed line counts, coloured green/red: `Edited main.c: +3 -1`.
+- **A real `/help`.** Two-column layout — commands in the tool colour, descriptions
+  plain — grouped into sections, with the tips (`@path`, Ctrl+C, Enter-means-No on
+  `[y/N]`) in muted text below.
+
 ## [0.5.2] - 2026-07-01
 
 ### Added
@@ -338,7 +362,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/BerTobi/Anachron/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/BerTobi/Anachron/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/BerTobi/Anachron/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/BerTobi/Anachron/compare/v0.4.5...v0.5.0

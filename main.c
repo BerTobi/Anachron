@@ -77,7 +77,10 @@ typedef struct {
     int  sr_win_n;
     int  sr_esc;         /* CONTENT: previous char was a backslash */
     int  sr_bol;         /* at beginning of a line (drives indentation) */
-    int  sr_began;       /* emitted anything this turn (drives the leading blank line) */
+    int  sr_began;       /* emitted anything this generation (drives the leading blank line) */
+    int  turn_labeled;   /* printed the once-per-turn "anachron" gutter label */
+    char model_name[96]; /* model display name (basename, no .gguf) for the status band */
+    int  ctx_total;      /* context window size, for the band's ctx % */
 } ui;
 
 #define SR_INDENT "  "
@@ -169,6 +172,25 @@ static void banner_row(ui *u, const char *label, const char *value) {
     fprintf(u->out, " %s\n", value);
 }
 
+/* The once-per-turn gutter label: every reply block opens with an amber "anachron"
+ * line, the counterpart of the blue "you>" prompt, so the transcript always says who
+ * is speaking. Printed lazily before the turn's first visible output (text or tool). */
+static void turn_label(ui *u) {
+    fputc('\n', u->out);
+    ui_style(u, CR_ACCENT);
+    fputs("anachron", u->out);
+    ui_reset(u);
+    fputc('\n', u->out);
+    u->turn_labeled = 1;
+}
+
+/* Open a block within the turn: the gutter label the first time, then just a
+ * blank-line separator between blocks. */
+static void block_start(ui *u) {
+    if (!u->turn_labeled) turn_label(u);
+    else fputc('\n', u->out);
+}
+
 /* Permission gate: pause before a file write/edit or a shell command and ask the user.
  * The pending action's details were just printed by ui_tool_call. Returns 1 (allow) /
  * 0 (decline). Auto-allows when not interactive (one-shot / piped: the invocation is
@@ -198,7 +220,7 @@ static int ui_confirm(const tool_call *c, void *ud) {
 /* Emit one already-decoded output char, indenting at the start of each line and
  * printing a leading blank line before the model's first output of the turn. */
 static void sr_emit(ui *u, char c) {
-    if (!u->sr_began) { fputc('\n', u->out); u->sr_began = 1; }
+    if (!u->sr_began) { block_start(u); u->sr_began = 1; }
     if (u->sr_bol && c != '\n') { fputs(SR_INDENT, u->out); u->sr_bol = 0; }
     fputc(c, u->out);
     u->sr_bol = (c == '\n');
@@ -289,7 +311,7 @@ static void ui_message(const char *text, void *ud) {
 static void ui_tool_call(const tool_call *c, void *ud) {
     ui *u = ud;
     if (c->kind == TC_FINAL) return;   /* rendered by ui_final; don't emit a leading blank line */
-    fputc('\n', u->out);
+    block_start(u);
     ui_style(u, CR_TOOL);
     switch (c->kind) {
         case TC_READ_FILE:   fprintf(u->out, "> read_file(%s)", c->path); break;
@@ -337,11 +359,20 @@ static void ui_tool_result(const char *obs, int ok, void *ud) {
     fflush(u->out);
 }
 
+/* The turn's answer. With the gutter label there is no "== final ==" banner any
+ * more: the reply is simply the last block of the anachron turn, indented like
+ * streamed text, with the status band closing the turn right after. */
 static void ui_final(const char *message, void *ud) {
     ui *u = ud;
-    fputc('\n', u->out);
-    ui_style(u, CR_FINAL); fputs("== final ==", u->out); ui_reset(u);
-    fprintf(u->out, "\n%s\n", message);
+    block_start(u);
+    const char *p = message;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        fprintf(u->out, SR_INDENT "%.*s\n", (int)len, p);
+        if (!nl) break;
+        p = nl + 1;
+    }
     fflush(u->out);
 }
 
@@ -358,8 +389,18 @@ static void ui_notice(const char *text, void *ud) {
  * both backends: added lines green, removed red, hunk/headers muted. */
 static void ui_diff(const char *diff, void *ud) {
     ui *u = ud;
+    /* Count changed lines first, so the "Edited X:" header can carry a +N -M stat. */
+    int add = 0, del = 0;
+    for (const char *q = diff; *q; ) {
+        if      (q[0] == '+') add++;
+        else if (q[0] == '-') del++;
+        const char *nl = strchr(q, '\n');
+        if (!nl) break;
+        q = nl + 1;
+    }
     fputc('\n', u->out);
     const char *p = diff;
+    int first = 1;
     while (*p) {
         const char *nl = strchr(p, '\n');
         size_t len = nl ? (size_t)(nl - p) : strlen(p);
@@ -370,6 +411,13 @@ static void ui_diff(const char *diff, void *ud) {
         ui_style(u, role);
         fprintf(u->out, "%.*s", (int)len, p);
         ui_reset(u);
+        if (first && (add || del)) {           /* "Edited x.c:" -> "Edited x.c: +3 -1" */
+            fputc(' ', u->out);
+            ui_style(u, CR_ADD);    fprintf(u->out, "+%d", add); ui_reset(u);
+            fputc(' ', u->out);
+            ui_style(u, CR_REMOVE); fprintf(u->out, "-%d", del); ui_reset(u);
+        }
+        first = 0;
         fputc('\n', u->out);
         if (!nl) break;
         p = nl + 1;
@@ -377,19 +425,48 @@ static void ui_diff(const char *diff, void *ud) {
     fflush(u->out);
 }
 
-/* Per-turn footer: wall-clock plus the backend's token counts when available.
- * "ctx" is the final step's prompt size (not a turn sum); "gen" is summed over the
- * turn's tool-loop iterations, so the two are deliberately on different bases. */
+/* Format a duration: "12.4s" under a minute, "12m34s" above (M170 turns run long). */
+static void fmt_dur(char *buf, size_t n, double secs) {
+    if (secs < 60.0) snprintf(buf, n, "%.1fs", secs);
+    else snprintf(buf, n, "%dm%02ds", (int)(secs / 60.0), (int)secs % 60);
+}
+
+/* End-of-turn status band: one muted line with the model, how full the context
+ * window is, tokens generated, and wall time. The ctx figure is the final prompt of
+ * the turn as a share of the window; it turns amber at 80% and earns a hint at 90%,
+ * because a 4096-token window fills sooner than it feels. Middle-dot separators on
+ * a terminal that renders them, ASCII pipes on the XP console. */
 static void print_turn_stats(ui *u, double secs, const agent_session *s) {
+    int fancy = u->color && u->unicode;
+    const char *sep  = fancy ? " \xc2\xb7 " : " | ";          /* " · " */
+    const char *dash = fancy ? "\xe2\x94\x80\xe2\x94\x80" : "--"; /* "──" */
+    char dur[32];
+    fmt_dur(dur, sizeof dur, secs);
+    int pct = -1;
+    if (u->ctx_total > 0 && s->turn_prompt_tokens > 0) {
+        long p = (long)s->turn_prompt_tokens * 100 / u->ctx_total;
+        pct = p > 100 ? 100 : (int)p;
+    }
     fputc('\n', u->out);
     ui_style(u, CR_MUTED);
-    if (s->turn_prompt_tokens > 0 || s->turn_completion_tokens > 0)
-        fprintf(u->out, "(%.2fs - %d ctx + %d gen tokens)",
-                secs, s->turn_prompt_tokens, s->turn_completion_tokens);
-    else
-        fprintf(u->out, "(%.2fs)", secs);
+    fprintf(u->out, "%s %s", dash, u->model_name[0] ? u->model_name : "no model");
+    if (pct >= 0) {
+        fprintf(u->out, "%sctx ", sep);
+        if (pct >= 80) ui_style(u, CR_WARN);
+        fprintf(u->out, "%d%%", pct);
+        if (pct >= 80) ui_style(u, CR_MUTED);
+    }
+    if (s->turn_completion_tokens > 0)
+        fprintf(u->out, "%s%d tok", sep, s->turn_completion_tokens);
+    fprintf(u->out, "%s%s", sep, dur);
     ui_reset(u);
     fputc('\n', u->out);
+    if (pct >= 90) {
+        ui_style(u, CR_WARN);
+        fputs("   context nearly full - /new starts a fresh conversation\n", u->out);
+        ui_reset(u);
+    }
+    fflush(u->out);
 }
 
 /* ---- session stats (for /stats) ---------------------------------------- */
@@ -920,6 +997,28 @@ static char *pick_model(void) {
     return pick;
 }
 
+/* Remember the model's display name for the status band: the path's basename with
+ * a ".gguf" extension dropped. NULL means the stub backend. */
+static void ui_set_model(ui *u, const char *path) {
+    const char *b = path ? path : "stub";
+    for (const char *p = b; *p; p++)
+        if (*p == '/' || *p == '\\') b = p + 1;
+    size_t n = strlen(b);
+    if (ends_gguf(b)) n -= 5;
+    if (n >= sizeof u->model_name) n = sizeof u->model_name - 1;
+    memcpy(u->model_name, b, n);
+    u->model_name[n] = '\0';
+}
+
+/* One /help row: the command in the tool colour, the description plain. */
+static void help_row(ui *u, const char *cmd, const char *desc) {
+    fputs("  ", u->out);
+    ui_style(u, CR_TOOL);
+    fprintf(u->out, "%-15s", cmd);
+    ui_reset(u);
+    fprintf(u->out, "  %s\n", desc);
+}
+
 /* Handle a line beginning with '/'. Returns CMD_NOT_A_COMMAND if the line is not
  * a recognized command and should be sent to the model verbatim. `backend_slot`
  * and `ctx_tokens` let /model swap the inference backend in place. */
@@ -948,18 +1047,22 @@ static cmd_result handle_command(const char *line, agent_session *s,
         return CMD_QUIT;
 
     if (strcmp(verb, "/help") == 0) {
-        fprintf(stdout,
-            "commands:\n"
-            "  /help            show this help\n"
-            "  /new, /clear     start a fresh conversation (clears history)\n"
-            "  /undo            revert the last write/edit from its snapshot\n"
-            "  /save [name]     save this conversation (default name: last)\n"
-            "  /sessions        list saved conversations\n"
-            "  /resume <name>   load a saved conversation\n"
-            "  /model <path>    load a different GGUF model (keeps the conversation)\n"
-            "  /stats           show session token + throughput stats\n"
-            "  /quit, /exit     leave\n"
-            "Anything else is sent to the model; use @path to attach a file.\n");
+        fputc('\n', u->out);
+        ui_span(u, CR_TITLE, "conversation"); fputc('\n', u->out);
+        help_row(u, "/new, /clear",  "start a fresh conversation (clears history)");
+        help_row(u, "/undo",         "revert the last write/edit from its snapshot");
+        help_row(u, "/save [name]",  "save this conversation (default name: last)");
+        help_row(u, "/sessions",     "list saved conversations");
+        help_row(u, "/resume <name>","load a saved conversation");
+        ui_span(u, CR_TITLE, "session"); fputc('\n', u->out);
+        help_row(u, "/model [path]", "switch models (no path: pick from a list)");
+        help_row(u, "/stats",        "session token + throughput stats");
+        help_row(u, "/help",         "show this help");
+        help_row(u, "/quit, /exit",  "leave");
+        ui_style(u, CR_MUTED);
+        fputs("Anything else is sent to the model. @path attaches a file; Ctrl+C\n"
+              "interrupts a turn; on a [y/N] question, Enter means No.\n", u->out);
+        ui_reset(u);
         return CMD_HANDLED;
     }
 
@@ -982,6 +1085,7 @@ static cmd_result handle_command(const char *line, agent_session *s,
         infer_free(*backend_slot);
         *backend_slot = nb;
         s->cfg.infer = nb;          /* run_turn reads the backend from the session's cfg */
+        ui_set_model(u, chosen);    /* keep the status band's name in step */
         fprintf(stdout, "switched to model %s\n", chosen);
         free(chosen);
         return CMD_HANDLED;
@@ -1355,6 +1459,8 @@ int main(int argc, char **argv) {
     u.out = stdout; u.log = logf; u.color = use_color;
     ui_console_init(&u);   /* capture console attrs (Win32); set unicode capability */
     u.yolo = yolo;
+    ui_set_model(&u, model);   /* status-band display name ("stub" when no model) */
+    u.ctx_total = ctx;
     agent_config cfg = {0};
     cfg.infer = backend;
     cfg.grammar = grammar;          /* stub ignores it; llama backend honors it */
@@ -1394,6 +1500,7 @@ int main(int argc, char **argv) {
         char *msg = expand_mentions(sb_cstr(&task), sandbox);
         double t0 = plat_time_sec();
         interrupt_clear();
+        u.turn_labeled = 0;
         rc = agent_session_run_turn(&session, msg);
         print_turn_stats(&u, plat_time_sec() - t0, &session);
         free(msg);
@@ -1427,7 +1534,7 @@ int main(int argc, char **argv) {
         for (;;) {
             plat_flush_input();   /* drop scroll/keystroke bytes from the last turn */
             fputc('\n', stdout);
-            ui_style(&u, CR_PROMPT); fputs("you>", stdout); ui_reset(&u);
+            ui_style(&u, CR_USER); fputs("you>", stdout); ui_reset(&u);
             fputc(' ', stdout);
             fflush(stdout);
             if (!read_line(&task)) { fprintf(stdout, "\n"); break; }
@@ -1440,6 +1547,7 @@ int main(int argc, char **argv) {
             interrupt_clear();
             plat_set_echo(0);   /* keys typed while generating won't echo as garbage;
                                    Ctrl+C still interrupts (signals stay on) */
+            u.turn_labeled = 0;
             rc = agent_session_run_turn(&session, msg);
             plat_set_echo(1);
             double elapsed = plat_time_sec() - t0;

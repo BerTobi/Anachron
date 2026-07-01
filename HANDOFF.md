@@ -512,7 +512,8 @@ API"). Five features:
   under `--no-color`/`"color":false`.
 - **Token usage:** new `infer_last_usage()` across all three backends (llama exact, remote
   from tokens_evaluated/predicted, stub ~chars/4). agent.c accumulates per turn; main
-  prints `(Ns - C ctx + G gen tokens)`.
+  prints the end-of-turn status band `-- model | ctx N% | G tok | Ns` (v0.5.3; ctx% turns
+  amber at 80%, hint at 90%).
 - **`/model <path>`:** swaps the inference backend in place (re-init, free old, repoint
   both main's handle and the session's cfg.infer); conversation survives.
 Also added `plat_isatty_stdout`, `plat_mkdir` (prior batch), `--no-color`/`--verify`/
