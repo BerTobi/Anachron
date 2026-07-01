@@ -26,13 +26,15 @@ box) and run it in place:
 
 ## Windows XP (32-bit)
 
-A prebuilt, static **`anachron-<ver>-winxp.exe`** is attached to each GitHub release —
-download it plus a model and run; no toolchain needed. This is the **real** model build.
-(Do NOT use `make win` / `anachron-stub.exe` — that's a no-model stub for testing the
-Win32 layer.) To build the real exe yourself from a clean clone:
+Download the **`anachron-<ver>-winxp.zip`** bundle from a GitHub release — it has the
+exe **plus the `grammars/` it needs at runtime**, a Windows quickstart, and a sample
+config. Unzip, drop a GGUF model in, run; no toolchain needed. (The bare
+`anachron-<ver>-winxp.exe` asset is also attached but needs `grammars/` beside it. Do
+NOT use `make win` / `anachron-stub.exe` — that's a no-model stub.) To build from a clone:
 
 ```sh
 make xp             # -> dist/xp/anachron-xp.exe  (single static PE32, subsystem 5.01)
+make bundle         # -> dist/anachron-<ver>-winxp.zip  (exe + grammars + README + config)
 ```
 
 `make xp` links the vendored XP llama.cpp artifacts in `prebuilt/xp/`, so it builds from
