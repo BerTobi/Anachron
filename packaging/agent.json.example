@@ -1,0 +1,8 @@
+{
+  "model": "qwen2.5-coder-0.5b-instruct-Q8_0.gguf",
+  "sandbox": "work",
+  "ctx": 4096,
+  "max_iters": 8,
+  "color": true,
+  "yolo": false
+}

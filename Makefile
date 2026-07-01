@@ -80,7 +80,7 @@ LL_CSRC_WIN = $(CORE) $(TOOLS) platform/platform_win32.c $(MAIN)
 
 REMOTE_SRC = $(CORE) $(TOOLS) infer/infer_remote.c platform/platform_posix.c $(MAIN)
 
-.PHONY: all test e2e verify-e2e noop-e2e repair-e2e recover-e2e win llama antix xp xp-vendor remote clean
+.PHONY: all test e2e verify-e2e noop-e2e repair-e2e recover-e2e win llama antix xp xp-vendor bundle remote clean
 
 all: anachron
 
@@ -188,6 +188,21 @@ xp-vendor:
 	cp $(LLAMA_DIR)/include/*.h $(XP_PREBUILT)/include/
 	cp $(LLAMA_DIR)/ggml/include/*.h $(XP_PREBUILT)/ggml-include/
 	@echo "Vendored XP libs+headers -> $(XP_PREBUILT)/ (commit it)."
+
+# Shippable Windows-XP bundle: the exe + the runtime grammars + a quickstart + a sample
+# config, zipped. This is what to attach to a release (the bare .exe can't find its
+# grammars). The model is NOT included (large, separately licensed) - see the README.
+VER    := $(shell sed -n 's/^\#define ANACHRON_VERSION "\(.*\)"/\1/p' core/version.h)
+BUNDLE := anachron-$(VER)-winxp
+bundle: xp
+	@rm -rf dist/$(BUNDLE) dist/$(BUNDLE).zip
+	@mkdir -p dist/$(BUNDLE)/grammars dist/$(BUNDLE)/work
+	cp $(XP_DIST)/anachron-xp.exe dist/$(BUNDLE)/anachron.exe
+	cp grammars/toolcall.gbnf grammars/toolcall-plan.gbnf dist/$(BUNDLE)/grammars/
+	@sed 's/$$/\r/' packaging/README-winxp.txt   > dist/$(BUNDLE)/README.txt          # CRLF for Notepad
+	@sed 's/$$/\r/' packaging/agent.json.example > dist/$(BUNDLE)/agent.json.example
+	@cd dist && zip -qr $(BUNDLE).zip $(BUNDLE)
+	@echo "Built dist/$(BUNDLE).zip (exe + grammars + README + sample config; no model)."
 
 # Remote/GPU-offload build: thin HTTP client, NO local model/llama libs. Point it at
 # a llama.cpp server with ANACHRON_REMOTE=host:port. Pure C, links like the stub build.
