@@ -367,6 +367,21 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
 
         if (cfg->on_tool_call) cfg->on_tool_call(&call, cfg->ud);
 
+        /* Permission gate: pause before a tool that changes files or runs a command,
+         * so the user can approve it. Read-only tools (read/list/search/glob) are never
+         * gated. A decline is fed back so the model picks another approach. */
+        if (cfg->confirm_tool &&
+            (call.kind == TC_WRITE_FILE || call.kind == TC_EDIT || call.kind == TC_RUN_COMMAND) &&
+            !cfg->confirm_tool(&call, cfg->ud)) {
+            const char *msg = "User declined this action. Do NOT retry it - take a different "
+                              "approach, or call final to explain what you could not do.";
+            if (cfg->on_tool_result) cfg->on_tool_result("(declined by user)", 0, cfg->ud);
+            log_kv(cfg, "result", msg);
+            history_push(h, MSG_TOOL_RESULT, msg);
+            toolcall_free(&call);
+            continue;
+        }
+
         int ok = 0;
         char *obs = tools_dispatch(&tctx, &call, &ok);
         if (cfg->on_tool_result) cfg->on_tool_result(obs, ok, cfg->ud);

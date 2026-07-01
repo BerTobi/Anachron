@@ -88,6 +88,8 @@ void plat_dirlist_free(plat_dirlist *dl) {
     dl->count = 0;
 }
 
+int plat_isatty_stdin(void) { return isatty(STDIN_FILENO) ? 1 : 0; }
+
 int plat_isatty_stdout(void) {
     return isatty(STDOUT_FILENO) ? 1 : 0;
 }

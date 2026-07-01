@@ -36,6 +36,9 @@ typedef struct {
     void (*on_iter_start)(int iter, void *ud);
     void (*on_token)(const char *piece, void *ud);          /* streamed model output */
     void (*on_tool_call)(const tool_call *call, void *ud);
+    /* nullable permission gate: called before a mutating/executing tool (write_file,
+     * edit, run_command) is dispatched. Return nonzero to allow, 0 to decline. */
+    int  (*confirm_tool)(const tool_call *call, void *ud);
     void (*on_tool_result)(const char *obs, int ok, void *ud);
     void (*on_message)(const char *text, void *ud);         /* plain conversational reply; turn ends */
     void (*on_final)(const char *message, void *ud);        /* explicit `final` tool; turn ends */

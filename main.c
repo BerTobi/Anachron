@@ -27,21 +27,33 @@
 #ifndef _WIN32
 #include <termios.h>   /* raw-mode line editing on a POSIX terminal */
 #include <unistd.h>
+#else
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>   /* SetConsoleTextAttribute: colour on real XP (no ANSI/VT there) */
 #endif
 
 #define DISPLAY_MAX_LINES 20
 
-/* ANSI palette — emitted only when the UI has color enabled (interactive POSIX
- * terminal, not Windows, not --no-color). Kept muted and consistent. */
-#define A_RESET  "\x1b[0m"
-#define A_TITLE  "\x1b[1;36m"   /* bold cyan  — banner title, section headers */
-#define A_PROMPT "\x1b[1;32m"   /* bold green — the you> prompt */
-#define A_TOOL   "\x1b[36m"     /* cyan       — tool-call lines */
-#define A_OK     "\x1b[32m"     /* green      — success */
-#define A_ERR    "\x1b[31m"     /* red        — errors */
-#define A_DIM    "\x1b[2m"      /* dim        — labels, secondary text */
-#define A_NOTE   "\x1b[33m"     /* yellow     — notices */
-#define A_FINAL  "\x1b[1;35m"   /* bold magenta — the final header */
+/* Semantic colour roles. One table maps each role to a 16-colour ANSI index (0-15,
+ * -1 = terminal default); both backends derive from it — SGR escapes on a POSIX/antiX
+ * terminal, SetConsoleTextAttribute on the Windows XP console (which has NO ANSI/VT).
+ * This is what finally gives colour on real XP, where raw escapes render as garbage. */
+typedef enum {
+    CR_DEFAULT = 0, CR_ACCENT, CR_TITLE, CR_PROMPT, CR_TOOL, CR_OK, CR_ADD,
+    CR_ERR, CR_REMOVE, CR_WARN, CR_MUTED, CR_FINAL, CR_USER, CR_COUNT
+} ui_role;
+
+/* ANSI index per role: 0-7 normal, 8-15 bright (8 = grey). -1 inherits the terminal. */
+static const int ROLE_ANSI[CR_COUNT] = {
+    /*CR_DEFAULT*/ -1, /*CR_ACCENT*/ 11, /*CR_TITLE*/ 14, /*CR_PROMPT*/ 10,
+    /*CR_TOOL*/ 6, /*CR_OK*/ 10, /*CR_ADD*/ 10, /*CR_ERR*/ 9, /*CR_REMOVE*/ 9,
+    /*CR_WARN*/ 3, /*CR_MUTED*/ 8, /*CR_FINAL*/ 13, /*CR_USER*/ 12,
+};
 
 /* Streaming-render states (see ui_token). The raw model token stream is turned into
  * a readable view live: plain replies pass through indented; a write_file/edit tool
@@ -50,7 +62,14 @@
 enum { SR_DECIDE, SR_PLAIN, SR_TOOL, SR_VALWAIT, SR_CONTENT, SR_AFTER };
 
 typedef struct {
-    FILE *out; FILE *log; int color;
+    FILE *out; FILE *log;
+    int  color;          /* colour enabled at all */
+    int  unicode;        /* terminal renders box/block glyphs (POSIX yes, XP raster no) */
+    int  win;            /* using the Win32 Console-API colour backend */
+    void *hcon;          /* Win32 console handle (HANDLE), NULL otherwise */
+    unsigned short attr0;/* Win32 original text attributes, restored on ui_reset/exit */
+    int  interactive;    /* a human is at the keyboard (REPL + tty stdin) — gate applies */
+    int  yolo;           /* --yolo / ANACHRON_YOLO: skip the permission gate */
     int  sr;             /* stream state */
     char sr_acc[64];     /* DECIDE: accumulate until plain-vs-tool is clear */
     int  sr_acc_n;
@@ -63,7 +82,118 @@ typedef struct {
 
 #define SR_INDENT "  "
 
-static const char *cc(const ui *u, const char *code) { return u->color ? code : ""; }
+#ifdef _WIN32
+/* Restore the console colour even when we never return to main() — a second Ctrl+C
+ * force-quits (interrupt.c re-raises SIGINT to the default handler) and closing the
+ * window skips normal cleanup, and a Win32 console attribute is a persistent, process-
+ * global side effect. This handler runs for Ctrl+C / close / logoff / shutdown; it
+ * restores the original attributes and returns FALSE so default handling still proceeds. */
+static HANDLE g_hcon_restore = NULL;
+static WORD   g_attr0_restore = 0;
+static BOOL WINAPI ui_ctrl_handler(DWORD type) {
+    (void)type;
+    if (g_hcon_restore) SetConsoleTextAttribute(g_hcon_restore, g_attr0_restore);
+    return FALSE;
+}
+#endif
+
+/* Detect the console + capture its original attributes (Win32); decide unicode
+ * capability. Called once at startup after u.color is decided. */
+static void ui_console_init(ui *u) {
+#ifdef _WIN32
+    u->unicode = 0;                     /* XP default raster font can't render block/box glyphs */
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (h != INVALID_HANDLE_VALUE && GetConsoleScreenBufferInfo(h, &csbi)) {
+        u->hcon = (void *)h;
+        u->attr0 = csbi.wAttributes;    /* the sentinel for CR_DEFAULT + restore-on-exit */
+        u->win = 1;
+        g_hcon_restore = h; g_attr0_restore = csbi.wAttributes;
+        SetConsoleCtrlHandler(ui_ctrl_handler, TRUE);   /* restore colour on force-quit/close */
+    } else {
+        u->win = 0; u->color = 0;        /* redirected to a file/pipe: no console colour */
+    }
+#else
+    u->unicode = 1;                     /* a POSIX terminal renders the block glyphs */
+    u->win = 0;
+#endif
+}
+
+/* Select a colour role for subsequent output. POSIX: emit an SGR escape. Win32: set
+ * the console text attribute (flushing buffered text first so it keeps its old colour). */
+static void ui_style(ui *u, ui_role role) {
+    if (!u->color) return;
+    int idx = ROLE_ANSI[role];
+#ifdef _WIN32
+    if (u->win) {
+        WORD a = u->attr0;
+        if (idx >= 0) {
+            /* ANSI colour order -> Win32 FOREGROUND bits (R and B are swapped). */
+            static const WORD fg[8] = {
+                0, FOREGROUND_RED, FOREGROUND_GREEN, FOREGROUND_RED | FOREGROUND_GREEN,
+                FOREGROUND_BLUE, FOREGROUND_RED | FOREGROUND_BLUE,
+                FOREGROUND_GREEN | FOREGROUND_BLUE,
+                FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE };
+            a = (WORD)(fg[idx & 7] | (idx >= 8 ? FOREGROUND_INTENSITY : 0) | (u->attr0 & 0xF0));
+        }
+        fflush(u->out);
+        SetConsoleTextAttribute((HANDLE)u->hcon, a);
+    }
+#else
+    if (idx < 0) { fputs("\x1b[0m", u->out); return; }
+    fprintf(u->out, "\x1b[%dm", idx < 8 ? 30 + idx : 90 + (idx - 8));
+#endif
+}
+
+static void ui_reset(ui *u) {
+    if (!u->color) return;
+#ifdef _WIN32
+    if (u->win) { fflush(u->out); SetConsoleTextAttribute((HANDLE)u->hcon, u->attr0); }
+#else
+    fputs("\x1b[0m", u->out);
+#endif
+}
+
+/* Restore the console to how we found it (call on exit; also safe mid-run). */
+static void ui_console_restore(ui *u) { ui_reset(u); }
+
+/* Convenience: print `text` in one role then reset. */
+static void ui_span(ui *u, ui_role role, const char *text) {
+    ui_style(u, role); fputs(text, u->out); ui_reset(u);
+}
+
+/* Banner row: "  label value" with the label muted. */
+static void banner_row(ui *u, const char *label, const char *value) {
+    fputs("  ", u->out);
+    ui_span(u, CR_MUTED, label);
+    fprintf(u->out, " %s\n", value);
+}
+
+/* Permission gate: pause before a file write/edit or a shell command and ask the user.
+ * The pending action's details were just printed by ui_tool_call. Returns 1 (allow) /
+ * 0 (decline). Auto-allows when not interactive (one-shot / piped: the invocation is
+ * the consent, and the sandbox is the boundary) or with --yolo. Default is NO — a bare
+ * Enter, EOF (Ctrl-D), or any non-'y' answer declines; input is flushed first so a
+ * stray keystroke typed during generation can't auto-approve. */
+static int ui_confirm(const tool_call *c, void *ud) {
+    ui *u = ud;
+    if (u->yolo || !u->interactive) return 1;
+    ui_style(u, CR_WARN);
+    fputs(c->kind == TC_RUN_COMMAND ? "  run this command? [y/N] "
+        : c->kind == TC_WRITE_FILE  ? "  write this file? [y/N] "
+        :                             "  apply this edit? [y/N] ", u->out);
+    ui_reset(u);
+    fflush(u->out);
+
+    plat_flush_input();     /* drop type-ahead so a stray Enter can't auto-approve */
+    plat_set_echo(1);       /* show the answer as it is typed (echo is off during a turn) */
+    char buf[16];
+    char *r = fgets(buf, sizeof buf, stdin);
+    plat_set_echo(0);
+    int yes = r && (buf[0] == 'y' || buf[0] == 'Y');
+    if (!yes) { ui_style(u, CR_MUTED); fputs("  declined.\n", u->out); ui_reset(u); }
+    return yes;
+}
 
 /* Emit one already-decoded output char, indenting at the start of each line and
  * printing a leading blank line before the model's first output of the turn. */
@@ -158,19 +288,25 @@ static void ui_message(const char *text, void *ud) {
 
 static void ui_tool_call(const tool_call *c, void *ud) {
     ui *u = ud;
-    const char *t = cc(u, A_TOOL), *r = cc(u, A_RESET);
+    if (c->kind == TC_FINAL) return;   /* rendered by ui_final; don't emit a leading blank line */
+    fputc('\n', u->out);
+    ui_style(u, CR_TOOL);
     switch (c->kind) {
-        case TC_READ_FILE:   fprintf(u->out, "\n%s> read_file(%s)%s\n", t, c->path, r); break;
-        case TC_WRITE_FILE:  fprintf(u->out, "\n%s> write_file(%s, %zu bytes)%s\n",
-                                     t, c->path, strlen(c->content ? c->content : ""), r); break;
-        case TC_LIST_DIR:    fprintf(u->out, "\n%s> list_dir(%s)%s\n", t, c->path, r); break;
-        case TC_RUN_COMMAND: fprintf(u->out, "\n%s> run_command(%s)%s\n", t, c->cmd, r); break;
-        case TC_EDIT:        fprintf(u->out, "\n%s> edit(%s)%s\n", t, c->path, r); break;
-        case TC_SEARCH:      fprintf(u->out, "\n%s> search(%s)%s\n", t, c->pattern ? c->pattern : "", r); break;
-        case TC_GLOB:        fprintf(u->out, "\n%s> glob(%s)%s\n", t, c->pattern ? c->pattern : "", r); break;
-        case TC_PLAN:        fprintf(u->out, "\n%s> plan:%s\n%s\n", t, r, c->plan ? c->plan : ""); break;
-        default: break; /* final handled by ui_final */
+        case TC_READ_FILE:   fprintf(u->out, "> read_file(%s)", c->path); break;
+        case TC_WRITE_FILE:  fprintf(u->out, "> write_file(%s, %zu bytes)",
+                                     c->path, strlen(c->content ? c->content : "")); break;
+        case TC_LIST_DIR:    fprintf(u->out, "> list_dir(%s)", c->path); break;
+        case TC_RUN_COMMAND: fprintf(u->out, "> run_command(%s)", c->cmd); break;
+        case TC_EDIT:        fprintf(u->out, "> edit(%s)", c->path); break;
+        case TC_SEARCH:      fprintf(u->out, "> search(%s)", c->pattern ? c->pattern : ""); break;
+        case TC_GLOB:        fprintf(u->out, "> glob(%s)", c->pattern ? c->pattern : ""); break;
+        case TC_PLAN:        fputs("> plan:", u->out); ui_reset(u);
+                             fprintf(u->out, "\n%s\n", c->plan ? c->plan : "");
+                             fflush(u->out); return;
+        default:             ui_reset(u); fflush(u->out); return; /* final handled by ui_final */
     }
+    ui_reset(u);
+    fputc('\n', u->out);
     fflush(u->out);
 }
 
@@ -178,8 +314,10 @@ static void ui_tool_call(const tool_call *c, void *ud) {
  * file dump doesn't bury the transcript (the model still got the full text). */
 static void ui_tool_result(const char *obs, int ok, void *ud) {
     ui *u = ud;
-    if (ok) fprintf(u->out, "%s  result:%s\n", cc(u, A_DIM), cc(u, A_RESET));
-    else    fprintf(u->out, "%s  result (error):%s\n", cc(u, A_ERR), cc(u, A_RESET));
+    if (ok) { ui_style(u, CR_MUTED); fputs("  result:", u->out); }
+    else    { ui_style(u, CR_ERR);   fputs("  result (error):", u->out); }
+    ui_reset(u);
+    fputc('\n', u->out);
     const char *p = obs;
     int line = 0;
     while (*p) {
@@ -201,34 +339,57 @@ static void ui_tool_result(const char *obs, int ok, void *ud) {
 
 static void ui_final(const char *message, void *ud) {
     ui *u = ud;
-    fprintf(u->out, "\n%s== final ==%s\n%s\n", cc(u, A_FINAL), cc(u, A_RESET), message);
+    fputc('\n', u->out);
+    ui_style(u, CR_FINAL); fputs("== final ==", u->out); ui_reset(u);
+    fprintf(u->out, "\n%s\n", message);
     fflush(u->out);
 }
 
 static void ui_notice(const char *text, void *ud) {
     ui *u = ud;
-    fprintf(u->out, "\n%s[notice] %s%s\n", cc(u, A_NOTE), text, cc(u, A_RESET));
+    fputc('\n', u->out);
+    ui_style(u, CR_WARN); fprintf(u->out, "[notice] %s", text); ui_reset(u);
+    fputc('\n', u->out);
     fflush(u->out);
 }
 
-/* Diff shown to the user when an existing file is edited (not fed to the model). */
+/* Diff shown to the user when an existing file is edited (not fed to the model). The
+ * diff text is plain (no embedded escapes); we colour it per-line here so it works on
+ * both backends: added lines green, removed red, hunk/headers muted. */
 static void ui_diff(const char *diff, void *ud) {
     ui *u = ud;
     fputc('\n', u->out);
-    fputs(diff, u->out);
+    const char *p = diff;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        ui_role role = CR_DEFAULT;
+        if      (p[0] == '+') role = CR_ADD;
+        else if (p[0] == '-') role = CR_REMOVE;
+        else if (p[0] != ' ') role = CR_MUTED; /* the "Edited X:" header; body lines start +/-/space */
+        ui_style(u, role);
+        fprintf(u->out, "%.*s", (int)len, p);
+        ui_reset(u);
+        fputc('\n', u->out);
+        if (!nl) break;
+        p = nl + 1;
+    }
     fflush(u->out);
 }
 
 /* Per-turn footer: wall-clock plus the backend's token counts when available.
  * "ctx" is the final step's prompt size (not a turn sum); "gen" is summed over the
  * turn's tool-loop iterations, so the two are deliberately on different bases. */
-static void print_turn_stats(const ui *u, double secs, const agent_session *s) {
-    const char *d = cc(u, A_DIM), *r = cc(u, A_RESET);
+static void print_turn_stats(ui *u, double secs, const agent_session *s) {
+    fputc('\n', u->out);
+    ui_style(u, CR_MUTED);
     if (s->turn_prompt_tokens > 0 || s->turn_completion_tokens > 0)
-        fprintf(u->out, "\n%s(%.2fs - %d ctx + %d gen tokens)%s\n",
-                d, secs, s->turn_prompt_tokens, s->turn_completion_tokens, r);
+        fprintf(u->out, "(%.2fs - %d ctx + %d gen tokens)",
+                secs, s->turn_prompt_tokens, s->turn_completion_tokens);
     else
-        fprintf(u->out, "\n%s(%.2fs)%s\n", d, secs, r);
+        fprintf(u->out, "(%.2fs)", secs);
+    ui_reset(u);
+    fputc('\n', u->out);
 }
 
 /* ---- session stats (for /stats) ---------------------------------------- */
@@ -258,35 +419,46 @@ static const char *const SPARK[8] = {
     "\xe2\x96\x85", "\xe2\x96\x86", "\xe2\x96\x87", "\xe2\x96\x88"
 };
 
-static void stats_render(const ui *u, const session_stats *st) {
-    const char *T = cc(u, A_TITLE), *D = cc(u, A_DIM), *G = cc(u, A_OK), *R = cc(u, A_RESET);
-    fprintf(u->out, "\n%sSession stats%s\n", T, R);
-    if (st->turns == 0) { fprintf(u->out, "  %sno turns yet%s\n", D, R); return; }
+/* Print "  label            " in muted, leaving the cursor for the value. */
+static void stat_label(ui *u, const char *label) {
+    ui_style(u, CR_MUTED);
+    fprintf(u->out, "  %-16s", label);
+    ui_reset(u);
+    fputc(' ', u->out);
+}
 
-    fprintf(u->out, "  %sturns           %s %d\n", D, R, st->turns);
-    fprintf(u->out, "  %sgenerated tokens%s %s%ld%s  (avg %ld/turn)\n",
-            D, R, G, st->gen_tokens, R, st->gen_tokens / st->turns);
-    fprintf(u->out, "  %scontext tokens  %s %ld  (processed)\n", D, R, st->ctx_tokens);
-    fprintf(u->out, "  %swall time       %s %.1fs\n", D, R, st->seconds);
-    if (st->seconds >= 0.05)   /* avoid a nonsense rate when timing is ~0 (e.g. the stub) */
-        fprintf(u->out, "  %sthroughput      %s %s%.2f tok/s%s  (generated / wall-clock)\n",
-                D, R, G, (double)st->gen_tokens / st->seconds, R);
-    else
-        fprintf(u->out, "  %sthroughput      %s n/a (too fast to measure)\n", D, R);
+static void stats_render(ui *u, const session_stats *st) {
+    fputc('\n', u->out);
+    ui_span(u, CR_TITLE, "Session stats"); fputc('\n', u->out);
+    if (st->turns == 0) { ui_style(u, CR_MUTED); fputs("  no turns yet\n", u->out); ui_reset(u); return; }
+
+    stat_label(u, "turns");            fprintf(u->out, "%d\n", st->turns);
+    stat_label(u, "generated tokens");
+    ui_style(u, CR_OK); fprintf(u->out, "%ld", st->gen_tokens); ui_reset(u);
+    fprintf(u->out, "  (avg %ld/turn)\n", st->gen_tokens / st->turns);
+    stat_label(u, "context tokens");   fprintf(u->out, "%ld  (processed)\n", st->ctx_tokens);
+    stat_label(u, "wall time");        fprintf(u->out, "%.1fs\n", st->seconds);
+    stat_label(u, "throughput");
+    if (st->seconds >= 0.05) {   /* avoid a nonsense rate when timing is ~0 (e.g. the stub) */
+        ui_style(u, CR_OK); fprintf(u->out, "%.2f tok/s", (double)st->gen_tokens / st->seconds); ui_reset(u);
+        fputs("  (generated / wall-clock)\n", u->out);
+    } else {
+        fputs("n/a (too fast to measure)\n", u->out);
+    }
 
     int n = st->hist_n < STAT_HIST ? st->hist_n : STAT_HIST;
     int start = st->hist_n < STAT_HIST ? 0 : st->hist_n % STAT_HIST;
     int mx = 1;
     for (int k = 0; k < n; k++) { int v = st->hist[(start + k) % STAT_HIST]; if (v > mx) mx = v; }
-    fprintf(u->out, "  %sgen tokens/turn %s ", D, R);
-    if (u->color) {
-        fputs(G, u->out);
+    stat_label(u, "gen tokens/turn");
+    if (u->color && u->unicode) {   /* block glyphs only where the terminal renders them */
+        ui_style(u, CR_OK);
         for (int k = 0; k < n; k++) {
             int v = st->hist[(start + k) % STAT_HIST];
             int lvl = v * 7 / mx; if (lvl < 0) lvl = 0; if (lvl > 7) lvl = 7;
             fputs(SPARK[lvl], u->out);
         }
-        fputs(R, u->out);
+        ui_reset(u);
         fprintf(u->out, "  (peak %d)\n", mx);
     } else {
         for (int k = 0; k < n; k++)
@@ -310,7 +482,8 @@ static void usage(const char *prog) {
         "  --plan            offer the experimental `plan` tool (off by default; small\n"
         "                    local models fixate on it - intended for a capable backend)\n"
         "  --no-plan         force-disable the plan tool (overrides \"plan\": true in config)\n"
-        "  --color/--no-color  force ANSI colour on/off (default: on for an interactive TTY)\n"
+        "  --color/--no-color  force colour on/off (default: on for an interactive TTY)\n"
+        "  --yolo              skip the y/N permission gate before file writes / commands\n"
         "  --log PATH        append a debug log (prompts, raw model output, tool results)\n"
         "  -V, --version     print the version and exit\n"
         "Defaults may also be set in agent.json / .anachron.json in the current directory\n"
@@ -674,7 +847,7 @@ static void cmd_undo(agent_session *s, const char *sandbox) {
 static cmd_result handle_command(const char *line, agent_session *s,
                                  const char *sandbox, int ctx_tokens,
                                  infer_ctx **backend_slot,
-                                 const session_stats *stats, const ui *u) {
+                                 const session_stats *stats, ui *u) {
     while (*line == ' ' || *line == '\t') line++;   /* tolerate leading blanks */
     if (line[0] != '/') return CMD_NOT_A_COMMAND;
 
@@ -839,6 +1012,17 @@ static json_value *load_config(const char **out_path) {
     return NULL;
 }
 
+/* True only for an explicit truthy env value (1 / true / yes / on, any case); every other
+ * value — 0/false/no/off/empty/unset — is false, so a falsy spelling can't flip a gate on. */
+static int env_truthy(const char *name) {
+    const char *v = getenv(name);
+    if (!v || !*v) return 0;
+    char c = v[0];
+    if (c == '1' || c == 't' || c == 'T' || c == 'y' || c == 'Y') return 1;
+    if ((c == 'o' || c == 'O') && (v[1] == 'n' || v[1] == 'N') && v[2] == '\0') return 1;
+    return 0;
+}
+
 /* Read a boolean key; returns `dflt` if absent or not a bool. */
 static int cfg_bool(const json_value *o, const char *key, int dflt) {
     const json_value *v = json_obj_get(o, key);
@@ -864,6 +1048,7 @@ int main(int argc, char **argv) {
                         left too little room and long sessions overflowed */
     int want_color = 1;                  /* gated by TTY + platform below; --no-color forces off */
     int color_force = 0;                 /* --color forces colour even when not a TTY (pipes) */
+    int yolo = env_truthy("ANACHRON_YOLO");   /* skip the permission gate (only 1/true/yes/on) */
 
     /* Config file (agent.json / .anachron.json) sets defaults; CLI flags below
      * override them. String values are xstrdup'd so they outlive the parsed JSON. */
@@ -887,6 +1072,7 @@ int main(int argc, char **argv) {
         plan_enabled  = cfg_bool(conf, "plan", plan_enabled);
         use_grammar   = cfg_bool(conf, "grammar_enabled", use_grammar);
         want_color    = cfg_bool(conf, "color", want_color);
+        yolo          = cfg_bool(conf, "yolo", yolo);
         json_free(conf);
     }
 
@@ -917,6 +1103,8 @@ int main(int argc, char **argv) {
             want_color = 0;
         } else if (strcmp(a, "--color") == 0 || strcmp(a, "--colour") == 0) {
             color_force = 1;
+        } else if (strcmp(a, "--yolo") == 0 || strcmp(a, "--no-confirm") == 0) {
+            yolo = 1;
         } else if (strcmp(a, "--log") == 0 && i + 1 < argc) {
             log_path = argv[++i];
         } else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
@@ -983,12 +1171,11 @@ int main(int argc, char **argv) {
      * is available; without it, the structural balance check still runs. */
     const char *verify_cc = verify_writes ? detect_cc() : NULL;
 
-    /* Colour only on an interactive POSIX terminal (or when --color forces it, e.g.
-     * piping to a colour-aware pager). The XP console does not interpret ANSI, so off. */
+    /* Colour on an interactive terminal (or when --color forces it). This now works on
+     * BOTH targets: ANSI escapes on a POSIX terminal, the Win32 Console API on the XP
+     * console (which has no ANSI). ui_console_init() below confirms a real console and
+     * turns colour back off when output is redirected to a file/pipe. */
     int use_color = color_force || (want_color && plat_isatty_stdout());
-#ifdef _WIN32
-    use_color = 0;
-#endif
 
     char *project_context = load_project_context(sandbox);
 
@@ -1009,6 +1196,8 @@ int main(int argc, char **argv) {
 
     ui u = {0};
     u.out = stdout; u.log = logf; u.color = use_color;
+    ui_console_init(&u);   /* capture console attrs (Win32); set unicode capability */
+    u.yolo = yolo;
     agent_config cfg = {0};
     cfg.infer = backend;
     cfg.grammar = grammar;          /* stub ignores it; llama backend honors it */
@@ -1020,13 +1209,14 @@ int main(int argc, char **argv) {
     cfg.verify_cc = verify_cc;
     cfg.plan_enabled = plan_enabled;
     cfg.project_context = project_context;
-    cfg.diff_colour = use_color;
+    cfg.diff_colour = 0;   /* diff text stays plain; ui_diff() colours it per-line (both backends) */
     cfg.on_diff = ui_diff;
     cfg.on_log = logf ? ui_log : NULL;
     cfg.ud = &u;
     cfg.on_iter_start = ui_iter_start;   /* resets the streaming renderer each generation */
     cfg.on_token = ui_token;
     cfg.on_tool_call = ui_tool_call;
+    cfg.confirm_tool = ui_confirm;   /* permission gate (interactive only; --yolo bypasses) */
     cfg.on_tool_result = ui_tool_result;
     cfg.on_message = ui_message;
     cfg.on_final = ui_final;
@@ -1050,6 +1240,7 @@ int main(int argc, char **argv) {
         print_turn_stats(&u, plat_time_sec() - t0, &session);
         free(msg);
     } else {
+        u.interactive = plat_isatty_stdin();   /* enable the permission gate when a human is present */
         /* Interactive conversation. Clear any leftover mouse-reporting mode a prior
          * program may have left on, so the wheel scrolls the terminal's scrollback
          * instead of emitting escape sequences into the prompt (TTY + POSIX only). */
@@ -1063,26 +1254,23 @@ int main(int argc, char **argv) {
             fflush(stdout);
         }
 #endif
-        fprintf(stdout,
-            "%sANACHRON " ANACHRON_VERSION "%s - local agentic coding harness\n"
-            "  %sbackend:%s %s\n"
-            "  %ssandbox:%s %s\n"
-            "  %sgrammar:%s %s\n"
-            "  %sverify :%s %s\n"
-            "  %scontext:%s %s\n"
-            "  %sconfig :%s %s\n"
-            "Type a task and press enter (use @path to attach a file). /help for commands.\n",
-            cc(&u, A_TITLE), cc(&u, A_RESET),
-            cc(&u, A_DIM), cc(&u, A_RESET), model ? model : "stub (no model)",
-            cc(&u, A_DIM), cc(&u, A_RESET), sandbox,
-            cc(&u, A_DIM), cc(&u, A_RESET), grammar ? grammar_path : "(none)",
-            cc(&u, A_DIM), cc(&u, A_RESET),
-            !verify_writes ? "off" : (verify_cc ? "on (balance + cc syntax check)" : "on (balance check)"),
-            cc(&u, A_DIM), cc(&u, A_RESET), project_context ? "AGENTS.md loaded" : "(no AGENTS.md)",
-            cc(&u, A_DIM), cc(&u, A_RESET), cfg_path ? cfg_path : "(none)");
+        ui_style(&u, CR_TITLE);
+        fputs("ANACHRON " ANACHRON_VERSION, stdout);
+        ui_reset(&u);
+        fputs(" - local agentic coding harness\n", stdout);
+        banner_row(&u, "backend:", model ? model : "stub (no model)");
+        banner_row(&u, "sandbox:", sandbox);
+        banner_row(&u, "grammar:", grammar ? grammar_path : "(none)");
+        banner_row(&u, "verify :", !verify_writes ? "off"
+                   : (verify_cc ? "on (balance + cc syntax check)" : "on (balance check)"));
+        banner_row(&u, "context:", project_context ? "AGENTS.md loaded" : "(no AGENTS.md)");
+        banner_row(&u, "config :", cfg_path ? cfg_path : "(none)");
+        fputs("Type a task and press enter (use @path to attach a file). /help for commands.\n", stdout);
         for (;;) {
             plat_flush_input();   /* drop scroll/keystroke bytes from the last turn */
-            fprintf(stdout, "\n%syou>%s ", cc(&u, A_PROMPT), cc(&u, A_RESET));
+            fputc('\n', stdout);
+            ui_style(&u, CR_PROMPT); fputs("you>", stdout); ui_reset(&u);
+            fputc(' ', stdout);
             fflush(stdout);
             if (!read_line(&task)) { fprintf(stdout, "\n"); break; }
             if (task.len == 0) continue;
@@ -1099,12 +1287,13 @@ int main(int argc, char **argv) {
             double elapsed = plat_time_sec() - t0;
             stats_record(&stats, &session, elapsed);
             print_turn_stats(&u, elapsed, &session);
-            if (interrupt_pending()) fprintf(stdout, "%s(interrupted)%s\n", cc(&u, A_NOTE), cc(&u, A_RESET));
+            if (interrupt_pending()) { ui_style(&u, CR_WARN); fputs("(interrupted)", stdout); ui_reset(&u); fputc('\n', stdout); }
             interrupt_clear();
             free(msg);
         }
     }
 
+    ui_console_restore(&u);   /* leave the console the colour we found it (Win32) */
     agent_session_free(&session);
     infer_free(backend);
     free(grammar);

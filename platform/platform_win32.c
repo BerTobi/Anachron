@@ -88,7 +88,14 @@ void plat_dirlist_free(plat_dirlist *dl) {
 }
 
 int plat_isatty_stdout(void) {
-    return _isatty(_fileno(stdout)) ? 1 : 0;
+    if (_isatty(_fileno(stdout))) return 1;
+    /* msvcrt _isatty can under-report a real console; ask Win32 directly. */
+    return GetFileType(GetStdHandle(STD_OUTPUT_HANDLE)) == FILE_TYPE_CHAR ? 1 : 0;
+}
+
+int plat_isatty_stdin(void) {
+    if (_isatty(_fileno(stdin))) return 1;
+    return GetFileType(GetStdHandle(STD_INPUT_HANDLE)) == FILE_TYPE_CHAR ? 1 : 0;
 }
 
 void plat_flush_input(void) {

@@ -48,6 +48,9 @@ anachron-xp.exe --model model.gguf --sandbox work
 
 - Fully **static** — no DLLs to ship (imports only KERNEL32/ADVAPI32/msvcrt, all XP).
 - Subsystem 5.01, SSE2-only, no Vista+ APIs.
+- **Colour** now works on the XP console (via the Win32 Console API, not ANSI); `--no-color`
+  turns it off. Before file writes / commands you'll get a `[y/N]` **permission gate**
+  (default No); `--yolo` (or `ANACHRON_YOLO=1`) skips it.
 - **Validated under Wine**: the .exe runs, parses args, loads a model and prefills.
   This is the first confirmation it executes (previously objdump-only). Real
   Pentium-M / XP hardware remains the final check.

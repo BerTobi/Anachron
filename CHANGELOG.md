@@ -7,6 +7,47 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-01
+
+Phase 1 of the UI-polish plan: make it read like a real agent harness, not a toy —
+starting on the target where it looked worst.
+
+### Added
+- **Colour on Windows XP, for the first time.** A semantic colour layer (`ui_style` /
+  `ui_reset`) with two backends: ANSI SGR on a POSIX/antiX terminal, and the **Win32
+  Console API** (`SetConsoleTextAttribute`) on the XP console — which does not interpret
+  ANSI/VT at all. One hand-tuned 16-colour role theme (assistant = amber, you = blue,
+  added = green, removed = red, muted = grey, warn = yellow, …) drives both, derived from
+  a single role→ANSI-index table. The blanket `_WIN32` colour-off is gone; colour is
+  gated on a real console (`GetConsoleScreenBufferInfo`) and the original attributes are
+  restored on exit — including a `SetConsoleCtrlHandler` so a Ctrl+C force-quit or a
+  window close never leaves the console tinted.
+- **Permission gate.** An interactive `[y/N]` confirmation before `write_file`, `edit`,
+  and `run_command`. Default is **No** — a bare Enter, EOF, or any non-`y` answer declines,
+  and pending input is flushed first so a stray keystroke can't auto-approve. Non-interactive
+  / one-shot runs auto-allow (the invocation is the consent; the sandbox is the boundary).
+  Bypass with `--yolo` / `ANACHRON_YOLO=1`. A decline is fed back to the model so it takes
+  another approach. Closes the safety gap of a coding agent that previously ran shell
+  commands and wrote files with no confirmation at all.
+- **Per-line coloured diffs on both backends** (added green / removed red / header muted),
+  replacing the ANSI-in-string colouring that could never render on XP.
+
+### Fixed
+- The `/stats` sparkline falls back to numbers where the terminal can't render Unicode
+  block glyphs (the XP raster font) instead of printing mojibake — gated on a unicode
+  capability flag set per platform.
+- Windows console detection (for both colour and prompt interactivity) falls back to
+  `GetFileType` when msvcrt's `_isatty` under-reports a real console.
+- `ANACHRON_YOLO` now parses as a real boolean: only `1`/`true`/`yes`/`on` bypass the
+  gate; `0`/`false`/`no`/`off`/empty keep it on (previously any non-empty value bypassed).
+
+### Notes
+- Validated: correct SGR on native; the permission gate exercised interactively under a
+  pseudo-tty (allow / default-No / `--yolo` / `ANACHRON_YOLO=false`-still-gates); all six
+  suites green; every target — including 32-bit antiX and the XP cross-build — warning-clean.
+  The **Win32 colour rendering itself is compile- and logic-validated**; final visual
+  confirmation is on real XP hardware, since Wine can't show Console-API colour.
+
 ## [0.4.5] - 2026-06-30
 
 ### Added
@@ -266,7 +307,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.4.5...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/BerTobi/Anachron/compare/v0.4.5...v0.5.0
 [0.4.5]: https://github.com/BerTobi/Anachron/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/BerTobi/Anachron/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/BerTobi/Anachron/compare/v0.4.2...v0.4.3
