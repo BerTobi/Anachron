@@ -7,6 +7,35 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-07-02
+
+Phase 3 of the UI-polish plan: interaction — the "is it frozen?" fix and the input
+affordances every harness has.
+
+### Added
+- **A live "thinking" indicator on both consoles.** Once the current token's forward
+  pass has run past ~1.5s (`ANACHRON_PTOK_MIN_SEC`), a small line is appended after the
+  streamed text and updated ~4×/s: `[####......] 47s 0.2t/s` — this token's progress,
+  the turn's elapsed generation time, and the rate. The ticking numbers are the
+  "not hung" signal on sub-1-tok/s hardware. It replaces the POSIX-only per-token bar
+  and — via `GetConsoleScreenBufferInfo`/`SetConsoleCursorPosition` cursor save/restore —
+  now works on the **real XP console** too, which previously had no decode indicator at
+  all. Erased before every token prints; fast hardware never sees it.
+- **`!command` shell escape.** A line starting with `!` runs directly as a shell command
+  in the sandbox — no model, no `[y/N]` gate (you typed it; that is the consent). Output
+  renders like a tool result, with the exit code shown when non-zero.
+- **Multiline input.** A line ending in `\` continues on a muted `...>` prompt; the
+  backslash becomes a newline in the message.
+- **Mode-as-colour prompt.** The `you>` prompt turns amber under `--yolo` as a standing
+  reminder that writes and commands will not ask for confirmation.
+
+### Changed
+- Streamed text is paced to **word boundaries**: output flushes on whitespace instead of
+  per token piece, so words appear whole and the XP console does far fewer writes.
+  (Display-only — the token pipeline is untouched.)
+- Tool results shown in the transcript are capped at **10 lines** (was 20); the model
+  still receives the full text.
+
 ## [0.5.3] - 2026-07-01
 
 Phase 2 of the UI-polish plan: the transcript structure that says "real harness" —

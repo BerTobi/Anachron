@@ -37,7 +37,7 @@
 #include <windows.h>   /* SetConsoleTextAttribute: colour on real XP (no ANSI/VT there) */
 #endif
 
-#define DISPLAY_MAX_LINES 20
+#define DISPLAY_MAX_LINES 10   /* tool results are capped in the transcript (model gets all) */
 
 /* Semantic colour roles. One table maps each role to a 16-colour ANSI index (0-15,
  * -1 = terminal default); both backends derive from it — SGR escapes on a POSIX/antiX
@@ -78,6 +78,7 @@ typedef struct {
     int  sr_esc;         /* CONTENT: previous char was a backslash */
     int  sr_bol;         /* at beginning of a line (drives indentation) */
     int  sr_began;       /* emitted anything this generation (drives the leading blank line) */
+    int  sr_flush;       /* emitted whitespace: flush at the end of this piece (word pacing) */
     int  turn_labeled;   /* printed the once-per-turn "anachron" gutter label */
     char model_name[96]; /* model display name (basename, no .gguf) for the status band */
     int  ctx_total;      /* context window size, for the band's ctx % */
@@ -185,10 +186,12 @@ static void turn_label(ui *u) {
 }
 
 /* Open a block within the turn: the gutter label the first time, then just a
- * blank-line separator between blocks. */
+ * blank-line separator between blocks. Flushed so the label/separator shows at
+ * once even though streamed text is paced to word boundaries. */
 static void block_start(ui *u) {
     if (!u->turn_labeled) turn_label(u);
     else fputc('\n', u->out);
+    fflush(u->out);
 }
 
 /* Permission gate: pause before a file write/edit or a shell command and ask the user.
@@ -224,6 +227,7 @@ static void sr_emit(ui *u, char c) {
     if (u->sr_bol && c != '\n') { fputs(SR_INDENT, u->out); u->sr_bol = 0; }
     fputc(c, u->out);
     u->sr_bol = (c == '\n');
+    if (c == ' ' || c == '\n' || c == '\t') u->sr_flush = 1;
 }
 
 static int win_ends(const char *w, int n, const char *needle) {
@@ -234,7 +238,7 @@ static int win_ends(const char *w, int n, const char *needle) {
 /* Reset the streaming renderer at the start of each model generation. */
 static void ui_stream_reset(ui *u) {
     u->sr = SR_DECIDE; u->sr_acc_n = 0; u->sr_win_n = 0;
-    u->sr_esc = 0; u->sr_bol = 1; u->sr_began = 0;
+    u->sr_esc = 0; u->sr_bol = 1; u->sr_began = 0; u->sr_flush = 0;
 }
 
 static void ui_iter_start(int iter, void *ud) { (void)iter; ui_stream_reset((ui *)ud); }
@@ -294,7 +298,11 @@ static void ui_token(const char *piece, void *ud) {
             break;                                 /* suppress the JSON tail */
         }
     }
-    fflush(u->out);
+    /* Pace the stream to word boundaries: flush only when this piece emitted
+     * whitespace. Words appear whole, and the XP console gets far fewer writes.
+     * Anything still buffered lands with the next boundary or the block renderers'
+     * own flushes (block_start / ui_message / ui_tool_call ... all flush). */
+    if (u->sr_flush) { u->sr_flush = 0; fflush(u->out); }
 }
 
 /* A plain conversational reply: the text streamed via ui_token. Flush a short reply
@@ -627,6 +635,29 @@ static char *expand_mentions(const char *line, const char *sandbox) {
     char *r = xstrdup(sb_cstr(&out));
     sb_free(&out);
     return r;
+}
+
+/* '!' shell escape: run the rest of the line as a shell command in the sandbox,
+ * no model involved. The user typed it, so the command is its own consent — the
+ * [y/N] gate is for model-initiated commands. Output renders like a tool result
+ * (indented, capped), plus the exit code when it is non-zero. */
+static void run_shell_escape(ui *u, const char *cmd, const char *sandbox) {
+    while (*cmd == ' ' || *cmd == '\t') cmd++;
+    if (!*cmd) {
+        fprintf(u->out, "usage: !<command>   (runs in the sandbox, without the model)\n");
+        return;
+    }
+    char *out = NULL; size_t olen = 0; int code = -1;
+    if (plat_run_command(cmd, sandbox, &out, &olen, &code) != 0) {
+        ui_style(u, CR_ERR); fputs("  could not run the command\n", u->out); ui_reset(u);
+        free(out);
+        return;
+    }
+    ui_tool_result((out && *out) ? out : "(no output)", code == 0, u);
+    if (code != 0) {
+        ui_style(u, CR_MUTED); fprintf(u->out, "  exit code %d\n", code); ui_reset(u);
+    }
+    free(out);
 }
 
 /* Probe for a C compiler so the verify-on-write guardrail can do a syntax check.
@@ -1057,11 +1088,13 @@ static cmd_result handle_command(const char *line, agent_session *s,
         ui_span(u, CR_TITLE, "session"); fputc('\n', u->out);
         help_row(u, "/model [path]", "switch models (no path: pick from a list)");
         help_row(u, "/stats",        "session token + throughput stats");
+        help_row(u, "!<command>",    "run a shell command in the sandbox (no model)");
         help_row(u, "/help",         "show this help");
         help_row(u, "/quit, /exit",  "leave");
         ui_style(u, CR_MUTED);
-        fputs("Anything else is sent to the model. @path attaches a file; Ctrl+C\n"
-              "interrupts a turn; on a [y/N] question, Enter means No.\n", u->out);
+        fputs("Anything else is sent to the model. @path attaches a file; a line ending\n"
+              "in \\ continues on the next line; Ctrl+C interrupts a turn; on a [y/N]\n"
+              "question, Enter means No.\n", u->out);
         ui_reset(u);
         return CMD_HANDLED;
     }
@@ -1534,11 +1567,35 @@ int main(int argc, char **argv) {
         for (;;) {
             plat_flush_input();   /* drop scroll/keystroke bytes from the last turn */
             fputc('\n', stdout);
-            ui_style(&u, CR_USER); fputs("you>", stdout); ui_reset(&u);
+            /* Mode-as-colour: the prompt goes amber under --yolo as a standing reminder
+             * that writes and commands will NOT ask for confirmation. */
+            ui_style(&u, u.yolo ? CR_WARN : CR_USER); fputs("you>", stdout); ui_reset(&u);
             fputc(' ', stdout);
             fflush(stdout);
             if (!read_line(&task)) { fprintf(stdout, "\n"); break; }
+            /* A trailing '\' continues the input on the next line (multiline task).
+             * The backslash becomes a newline in the message. */
+            while (task.len > 0 && sb_cstr(&task)[task.len - 1] == '\\') {
+                ui_style(&u, CR_MUTED); fputs("...>", stdout); ui_reset(&u);
+                fputc(' ', stdout);
+                fflush(stdout);
+                strbuf more; sb_init(&more);
+                int r = read_line(&more);
+                strbuf joined; sb_init(&joined);
+                sb_append_n(&joined, sb_cstr(&task), task.len - 1);
+                sb_putc(&joined, '\n');
+                sb_append(&joined, sb_cstr(&more));
+                sb_clear(&task);
+                sb_append(&task, sb_cstr(&joined));
+                sb_free(&joined);
+                sb_free(&more);
+                if (!r) break;   /* EOF mid-continuation: send what we have */
+            }
             if (task.len == 0) continue;
+            if (sb_cstr(&task)[0] == '!') {   /* shell escape: run it directly, no model */
+                run_shell_escape(&u, sb_cstr(&task) + 1, sandbox);
+                continue;
+            }
             cmd_result cr = handle_command(sb_cstr(&task), &session, sandbox, ctx, &backend, &stats, &u);
             if (cr == CMD_QUIT) break;
             if (cr == CMD_HANDLED) continue;

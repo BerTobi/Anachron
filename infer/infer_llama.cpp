@@ -54,9 +54,13 @@ struct infer_ctx {
     int                       probe;            /* ANACHRON_PROBE_DECODE: print per-decode fire stats */
     double                    last_decode_sec;  /* measured time of the previous decode (the T estimate) */
     double                    bar_last_draw;    /* throttle: wall-clock of the last bar redraw */
-    int                       bar_active;       /* per-token bar engaged for the CURRENT decode (gated) */
-    int                       out_tty;          /* stdout is an interactive terminal (set once) */
-    double                    ptok_min_sec;     /* show the per-token bar only above this decode time */
+    int                       out_tty;          /* stdout is an interactive console (set once) */
+    double                    ptok_min_sec;     /* thinking indicator appears once a decode exceeds this */
+    /* decode "thinking" indicator (drawn after the streamed text during a slow decode) */
+    int                       tail_on;          /* indicator currently on screen (needs erasing) */
+    int                       tail_len;         /* widest text drawn so far (Win32 erase width) */
+    int                       tail_x, tail_y;   /* Win32: saved cursor position (end of text) */
+    double                    gen_t0;           /* wall-clock start of this generation (elapsed/rate) */
     /* prefill bar, driven by the abort_callback so it moves smoothly WITHIN a decode batch
      * (a 32-token batch is minutes on a Pentium-M; the callback fires ~hundreds of times per
      * batch, so we interpolate progress by time instead of jumping once per batch) */
@@ -135,46 +139,107 @@ static void clear_bar(void) {
     fflush(stderr);
 }
 
-/* --- per-token decode bar (very slow hardware only) ------------------------------
- * On sub-~1-tok/s hardware a single token's forward pass is seconds of dead air. We
- * fill a small bar over that one decode (its work is bounded, so a % is honest),
- * driven by abort_callback ticks and a time estimate from the previous decode. It
- * lives just after the streamed text on the same terminal line, drawn/erased with
- * ANSI save-restore-cursor (DECSC/DECRC) + erase-to-EOL, so it never disturbs the
- * streamed output. ANSI is POSIX/antiX only - the XP console gets no per-token bar
- * (it has no cursor save/restore), which is fine: the load + prefill bars remain. */
-#ifndef _WIN32
-static void ptok_bar_begin(void) { fputs("\0337", stdout); fflush(stdout); }  /* DECSC: save cursor */
-static void ptok_bar_end(void)   { fputs("\0338\033[K", stdout); fflush(stdout); } /* DECRC + erase bar */
+/* --- decode "thinking" indicator (very slow hardware only) -----------------------
+ * On sub-~0.7-tok/s hardware a single token's forward pass is seconds of dead air
+ * after the last streamed word - the "is it frozen?" problem. Once the current decode
+ * has run longer than ptok_min_sec, a small live line is appended after the streamed
+ * text and updated a few times a second from the abort_callback:
+ *     [####......] 47s 0.2t/s
+ * (this token's progress against the previous decode's time, the turn's elapsed
+ * generation time, and the generation rate - the ticking numbers are the "not hung"
+ * signal). It is erased before the next token prints. Cursor save/restore is
+ * per-platform: ANSI DECSC/DECRC + erase-to-EOL on POSIX/antiX; on the Win32 console
+ * (real XP has no ANSI) the cursor position is saved with GetConsoleScreenBufferInfo
+ * and restored with SetConsoleCursorPosition - so the XP console gets a decode
+ * indicator for the first time. Fast hardware never sees it. */
 
-static void ptok_bar_draw(double frac, double rem_sec) {
-    if (frac < 0) frac = 0;
-    if (frac > 0.99) frac = 0.99;   /* never show a full/"done" bar before the token lands */
-    const int W = 14;
-    int fill = (int)(frac * W + 0.5f);
+static bool stdout_is_console(void) {
+#ifdef _WIN32
+    if (ANCH_ISATTY_OUT()) return true;
+    return GetFileType(GetStdHandle(STD_OUTPUT_HANDLE)) == FILE_TYPE_CHAR;
+#else
+    return ANCH_ISATTY_OUT() != 0;
+#endif
+}
+
+/* Compose the indicator text. Kept short: it must fit after the streamed text. */
+static int tail_text(infer_ctx *c, double now, char *buf, size_t bufsz) {
+    const int W = 10;
+    double frac = (c->last_decode_sec > 0.0) ? (now - c->decode_t0) / c->last_decode_sec : 0.0;
+    if (frac < 0.0) frac = 0.0;
+    if (frac > 0.99) frac = 0.99;   /* never show a full bar before the token lands */
     char bar[W + 1];
+    int fill = (int)(frac * W + 0.5);
     for (int i = 0; i < W; i++) bar[i] = (i < fill) ? '#' : '.';
     bar[W] = '\0';
-    if (rem_sec < 1.0) rem_sec = 1.0;
-    /* DECRC back to end-of-text, erase any old bar, draw "  [####....] ~Ns" */
-    printf("\0338\033[K  [%s] ~%.0fs", bar, rem_sec);
+    double el = now - c->gen_t0;
+    char dur[24];
+    if (el < 60.0) snprintf(dur, sizeof dur, "%.0fs", el);
+    else snprintf(dur, sizeof dur, "%dm%02ds", (int)(el / 60.0), (int)el % 60);
+    double rate = (el > 0.0) ? (double)c->last_completion_tokens / el : 0.0;
+    return snprintf(buf, bufsz, "  [%s] %s %.1ft/s", bar, dur, rate);
+}
+
+#ifdef _WIN32
+/* Save / return to the end-of-text cursor position via the Console API. */
+static int tail_save_pos(infer_ctx *c, int need) {
+    fflush(stdout);   /* anything the UI buffered must land before we measure */
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_SCREEN_BUFFER_INFO sbi;
+    if (h == INVALID_HANDLE_VALUE || !GetConsoleScreenBufferInfo(h, &sbi)) return 0;
+    if ((int)sbi.dwCursorPosition.X + need >= (int)sbi.dwSize.X)
+        return 0;   /* would wrap (and possibly scroll): skip this line's indicator */
+    c->tail_x = sbi.dwCursorPosition.X;
+    c->tail_y = sbi.dwCursorPosition.Y;
+    return 1;
+}
+
+static void tail_home(infer_ctx *c) {
+    fflush(stdout);
+    COORD pos;
+    pos.X = (SHORT)c->tail_x;
+    pos.Y = (SHORT)c->tail_y;
+    SetConsoleCursorPosition(GetStdHandle(STD_OUTPUT_HANDLE), pos);
+}
+
+static void tail_draw(infer_ctx *c, const char *txt, int len) {
+    if (!c->tail_on) {
+        if (!tail_save_pos(c, len + 4)) return;  /* +4: elapsed may widen ("59s"->"1m00s") */
+        c->tail_on = 1;
+        c->tail_len = 0;
+    } else {
+        tail_home(c);
+    }
+    fputs(txt, stdout);
+    for (int pad = c->tail_len - len; pad > 0; pad--) fputc(' ', stdout);  /* cover shrinkage */
+    if (len > c->tail_len) c->tail_len = len;
     fflush(stdout);
 }
-#else
-static void ptok_bar_begin(void) {}
-static void ptok_bar_end(void)   {}
-static void ptok_bar_draw(double, double) {}
-#endif
 
-/* Engage the per-token bar for the next decode only when stdout is a terminal and the
- * previous decode was slow enough that a filling bar helps rather than strobes. */
-static int ptok_bar_enabled(const infer_ctx *c) {
-#ifdef _WIN32
-    (void)c; return 0;
-#else
-    return c->out_tty && c->last_decode_sec > c->ptok_min_sec;
-#endif
+static void tail_erase(infer_ctx *c) {
+    if (!c->tail_on) return;
+    tail_home(c);
+    for (int i = 0; i < c->tail_len; i++) fputc(' ', stdout);
+    fflush(stdout);
+    tail_home(c);
+    c->tail_on = 0;
+    c->tail_len = 0;
 }
+#else
+static void tail_draw(infer_ctx *c, const char *txt, int len) {
+    (void)len;
+    if (!c->tail_on) { fputs("\0337", stdout); c->tail_on = 1; }  /* DECSC: save end of text */
+    printf("\0338\033[K%s", txt);   /* DECRC + erase-to-EOL + draw */
+    fflush(stdout);
+}
+
+static void tail_erase(infer_ctx *c) {
+    if (!c->tail_on) return;
+    fputs("\0338\033[K", stdout);
+    fflush(stdout);
+    c->tail_on = 0;
+}
+#endif
 
 struct load_state { double t0; bool tty; };
 
@@ -199,21 +264,13 @@ static bool decode_abort_cb(void *data) {
     if (!c) return false;
     c->decode_fires++;
     /* Ctrl+C felt mid-decode: abort this forward pass now instead of waiting up to a
-     * full (multi-second, on slow hardware) token. Clean the bar first so the cursor
-     * is restored, then signal the abort. */
+     * full (multi-second, on slow hardware) token. Clean the indicator first so the
+     * cursor is restored, then signal the abort. */
     if (interrupt_pending()) {
-        if (c->bar_active) { ptok_bar_end(); c->bar_active = 0; }
+        tail_erase(c);
         return true;
     }
-    if (c->bar_active) {
-        double now = plat_time_sec();
-        if (now - c->bar_last_draw >= 0.15) {        /* throttle redraws to ~150ms */
-            c->bar_last_draw = now;
-            double el = now - c->decode_t0;
-            double frac = (c->last_decode_sec > 0) ? el / c->last_decode_sec : 0.0;
-            ptok_bar_draw(frac, c->last_decode_sec - el);
-        }
-    } else if (c->pf_active) {
+    if (c->pf_active) {
         /* Prefill bar: update WITHIN the batch by interpolating on time (a batch is minutes
          * on slow hardware), so it moves every ~150ms instead of jumping once per 32 tokens. */
         double now = plat_time_sec();
@@ -228,6 +285,16 @@ static bool decode_abort_cb(void *data) {
             double eld = now - c->pf_t0;
             double eta = (frac > 0.02) ? eld * (1.0 - frac) / frac : -1.0;
             draw_bar("reading prompt", (float)frac, eta, (long)done, c->pf_total);
+        }
+    } else if (c->out_tty) {
+        /* Generation decode: once THIS forward pass has taken ptok_min_sec, show the
+         * thinking indicator after the streamed text and update it ~4x/sec. */
+        double now = plat_time_sec();
+        if (now - c->decode_t0 >= c->ptok_min_sec && now - c->bar_last_draw >= 0.25) {
+            c->bar_last_draw = now;
+            char txt[48];
+            int len = tail_text(c, now, txt, sizeof txt);
+            tail_draw(c, txt, len);
         }
     }
     return false;   /* false => keep computing */
@@ -300,11 +367,12 @@ extern "C" infer_ctx *infer_init(const char *gguf_path, int n_ctx) {
     c->probe = (getenv("ANACHRON_PROBE_DECODE") != nullptr);
     c->last_decode_sec = 0.0;
     c->bar_last_draw = 0.0;
-    c->bar_active = 0;
+    c->tail_on = 0; c->tail_len = 0; c->tail_x = 0; c->tail_y = 0;
+    c->gen_t0 = 0.0;
     c->pf_active = 0; c->pf_base = 0; c->pf_total = 0; c->pf_batch = 0;
     c->pf_t0 = 0.0; c->pf_batch_t0 = 0.0; c->pf_tok_sec = 0.0;
-    c->out_tty = (ANCH_ISATTY_OUT() != 0);
-    {   /* per-token bar engages above this decode time; default 1.5s (~< 0.66 tok/s) */
+    c->out_tty = stdout_is_console() ? 1 : 0;
+    {   /* the thinking indicator engages once a decode exceeds this; default 1.5s (~< 0.66 tok/s) */
         const char *e = getenv("ANACHRON_PTOK_MIN_SEC");
         c->ptok_min_sec = (e && atof(e) > 0.0) ? atof(e) : 1.5;
     }
@@ -465,6 +533,7 @@ extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *gram
 
     /* Generation: sample -> emit -> decode the sampled token back in. */
     int rc = 0;
+    c->gen_t0 = plat_time_sec();   /* thinking indicator: turn elapsed + rate base */
     llama_token prev_id = -1;
     int same_run = 0;
     const int MAX_SAME_RUN = 40;  /* consecutive identical tokens => runaway */
@@ -495,16 +564,14 @@ extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *gram
         if (llama_memory_seq_pos_max(mem, 0) + 1 >= n_ctx) break; /* out of room */
         llama_token cur = id;
         llama_batch b = llama_batch_get_one(&cur, 1);
-        /* The single-token forward pass: the ~5s gap on slow hardware. Measure how
-         * often abort_callback fires inside it (step 1: validates the per-token bar). */
+        /* The single-token forward pass: the ~5s gap on slow hardware. The abort
+         * callback shows the thinking indicator if this pass runs long. */
         c->decode_fires = 0;
         c->decode_t0 = plat_time_sec();
-        c->bar_active = ptok_bar_enabled(c);
-        c->bar_last_draw = 0.0;                  /* draw on the first throttled tick */
-        if (c->bar_active) ptok_bar_begin();     /* save cursor at end of streamed text */
+        c->bar_last_draw = 0.0;                  /* draw on the first eligible tick */
         int dec = llama_decode(c->ctx, b);
         double dsec = plat_time_sec() - c->decode_t0;
-        if (c->bar_active) { ptok_bar_end(); c->bar_active = 0; }
+        tail_erase(c);                           /* clear the indicator before the next token */
         /* EMA estimate for the NEXT token's bar: robust to a one-off slow/fast decode
          * (e.g. host scheduling jitter) while still tracking a real rate change. */
         c->last_decode_sec = (c->last_decode_sec > 0.0)

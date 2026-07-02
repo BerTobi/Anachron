@@ -41,6 +41,10 @@ IN A SESSION
   - Before writing a file or running a command it asks:  [y/N]   (Enter = No.)
   - /model         switch models - lists what's in models\ and lets you pick.
   - @path\to\file  attach a file to your message.
+  - !dir           a line starting with ! runs as a shell command (no model).
+  - A line ending in \  continues on the next line (multiline input).
+  - While the model computes you'll see  [####......] 47s 0.2t/s  tick after the
+    text: the current token's progress, elapsed time, and speed. Not frozen!
   - The FIRST turn is slow (reads the whole prompt). After that a cache file is
     written next to the model and reused, so later runs start in seconds.
 
