@@ -56,6 +56,8 @@ typedef struct {
                                  NULL if none — drives /undo. Owned by the session. */
     int  turn_prompt_tokens;      /* prompt tokens of the last generate in the turn */
     int  turn_completion_tokens;  /* generated tokens summed over the turn */
+    double chars_per_tok;         /* measured chars/token of this session's prompts;
+                                     drives the shrink budget (starts conservative) */
 } agent_session;
 
 void agent_session_init(agent_session *s, const agent_config *cfg);

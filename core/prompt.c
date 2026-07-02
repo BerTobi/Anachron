@@ -158,8 +158,11 @@ static int is_tool_call_msg(const message *m) {
 
 int history_shrink(history *h) {
     /* (1) Cheapest first: elide the oldest not-yet-elided tool result. Never touch
-     * index 0 (the original task) or assistant tool calls (the flow needs them). */
-    for (size_t i = 1; i < h->count; i++) {
+     * index 0 (the original task), assistant tool calls (the flow needs them), or
+     * the most recent messages — eliding the tool result the model JUST received
+     * would derail the current step. */
+    size_t recent = h->count > SHRINK_KEEP_RECENT ? h->count - SHRINK_KEEP_RECENT : 1;
+    for (size_t i = 1; i < recent; i++) {
         if (h->items[i].role == MSG_TOOL_RESULT && !h->items[i].elided) {
             free(h->items[i].text);
             h->items[i].text = xstrdup("[older tool output elided to save context]");
@@ -184,6 +187,16 @@ int history_shrink(history *h) {
             m->text = xstrdup(sb_cstr(&t));
             m->elided = 1;
             sb_free(&t);
+            return 1;
+        }
+    }
+    /* (3) Last resort: elide even a recent tool result rather than let the prompt
+     * outgrow the context window and wedge the backend. */
+    for (size_t i = 1; i < h->count; i++) {
+        if (h->items[i].role == MSG_TOOL_RESULT && !h->items[i].elided) {
+            free(h->items[i].text);
+            h->items[i].text = xstrdup("[older tool output elided to save context]");
+            h->items[i].elided = 1;
             return 1;
         }
     }

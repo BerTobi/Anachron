@@ -5,6 +5,6 @@
 #ifndef ANACHRON_VERSION_H
 #define ANACHRON_VERSION_H
 
-#define ANACHRON_VERSION "0.5.4"
+#define ANACHRON_VERSION "0.5.5"
 
 #endif /* ANACHRON_VERSION_H */

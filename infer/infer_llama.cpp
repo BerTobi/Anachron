@@ -46,6 +46,8 @@ struct infer_ctx {
     llama_context            *ctx;
     const llama_vocab        *vocab;
     std::vector<llama_token>  cached;  /* tokens currently held in the KV cache (seq 0), in order */
+    std::string               cached_text; /* the exact text those tokens came from (prompt +
+                                              emitted output); empty = unknown (e.g. disk cache) */
     int                       last_prompt_tokens;
     int                       last_completion_tokens;
     /* intra-token decode instrumentation (drives the per-token progress bar) */
@@ -422,32 +424,68 @@ extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *gram
     c->last_prompt_tokens = 0;
     c->last_completion_tokens = 0;
 
-    /* Tokenize the full prompt (system + few-shot + whole conversation so far). */
-    const int len = (int)strlen(prompt);
-    int n_tok = -llama_tokenize(c->vocab, prompt, len, nullptr, 0, /*add_special*/ true, /*parse_special*/ true);
-    if (n_tok <= 0) {
-        fprintf(stderr, "infer_llama: tokenize failed\n");
-        return -1;
-    }
-    std::vector<llama_token> toks(n_tok);
-    if (llama_tokenize(c->vocab, prompt, len, toks.data(), n_tok, true, true) < 0) {
-        fprintf(stderr, "infer_llama: tokenize failed (second pass)\n");
-        return -1;
+    /* --- KV-cache reuse (the speedup) ---
+     * Exact-continuation fast path first: when the new prompt literally begins with
+     * the text the KV cache already covers (the previous prompt + what the model
+     * emitted), keep the whole cache and tokenize ONLY the appended tail. This
+     * sidesteps re-tokenization divergence: the SAMPLED tokens in the cache need not
+     * match how their concatenated text re-tokenizes (grammar-constrained JSON often
+     * doesn't), so a token-by-token comparison could needlessly re-read from inside
+     * the last tool call. The appended tail always starts at a ChatML special marker,
+     * so tokenizing it alone is boundary-safe. Falls back to the longest-token-prefix
+     * match otherwise (a cache loaded from disk, or history rewritten by compaction). */
+    const size_t plen = strlen(prompt);
+    int n_tok, n_keep;
+    std::vector<llama_token> toks;
+    if (!c->cached_text.empty() && plen >= c->cached_text.size() &&
+        memcmp(prompt, c->cached_text.data(), c->cached_text.size()) == 0) {
+        toks = c->cached;
+        n_keep = (int)c->cached.size();
+        const char *tail = prompt + c->cached_text.size();
+        const int tlen = (int)(plen - c->cached_text.size());
+        if (tlen > 0) {
+            int nt = -llama_tokenize(c->vocab, tail, tlen, nullptr, 0, /*add_special*/ false, /*parse_special*/ true);
+            if (nt > 0) {
+                size_t base = toks.size();
+                toks.resize(base + (size_t)nt);
+                if (llama_tokenize(c->vocab, tail, tlen, toks.data() + base, nt, false, true) < 0) {
+                    fprintf(stderr, "infer_llama: tokenize failed (tail)\n");
+                    return -1;
+                }
+            }
+        }
+        n_tok = (int)toks.size();
+    } else {
+        /* Tokenize the full prompt (system + few-shot + whole conversation so far),
+         * then find the longest prefix shared with what is already in the cache, drop
+         * the diverged tail from the cache, and decode ONLY the new part. The large,
+         * unchanging system+few-shot prefix is decoded once and reused every turn. */
+        const int len = (int)plen;
+        n_tok = -llama_tokenize(c->vocab, prompt, len, nullptr, 0, /*add_special*/ true, /*parse_special*/ true);
+        if (n_tok <= 0) {
+            fprintf(stderr, "infer_llama: tokenize failed\n");
+            return -1;
+        }
+        toks.resize((size_t)n_tok);
+        if (llama_tokenize(c->vocab, prompt, len, toks.data(), n_tok, true, true) < 0) {
+            fprintf(stderr, "infer_llama: tokenize failed (second pass)\n");
+            return -1;
+        }
+        n_keep = 0;
+        while (n_keep < (int)c->cached.size() && n_keep < n_tok &&
+               c->cached[n_keep] == toks[n_keep]) {
+            n_keep++;
+        }
     }
     c->last_prompt_tokens = n_tok;
-
-    /* --- KV-cache reuse (the speedup) ---
-     * Find the longest prefix shared with what is already in the cache, drop the
-     * diverged tail from the cache, and decode ONLY the new tail. The large,
-     * unchanging system+few-shot+history prefix is decoded once and reused on
-     * every later turn instead of being re-processed from scratch. */
-    int n_keep = 0;
-    while (n_keep < (int)c->cached.size() && n_keep < n_tok &&
-           c->cached[n_keep] == toks[n_keep]) {
-        n_keep++;
-    }
+    /* The cache no longer matches its text until the prefill below completes. */
+    c->cached_text.clear();
     /* Must decode at least the final prompt token to get fresh logits to sample. */
     if (n_keep >= n_tok) n_keep = n_tok - 1;
+
+    if (c->probe)   /* ANACHRON_PROBE_DECODE: show how much of the prompt the KV cache reused */
+        fprintf(stderr, "[probe] prefill: prompt=%d tokens, reused=%d, new=%d (cached had %zu)\n",
+                n_tok, n_keep, n_tok - n_keep, c->cached.size());
 
     if (n_tok > n_ctx) {
         fprintf(stderr, "infer_llama: prompt (%d tokens) exceeds context (%d)\n", n_tok, n_ctx);
@@ -473,7 +511,12 @@ extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *gram
         c->pf_active = show_pf; c->pf_total = n_new_total; c->pf_base = 0; c->pf_batch = 0;
         c->pf_t0 = plat_time_sec(); c->pf_tok_sec = 0.0; c->bar_last_draw = 0.0;
         if (show_pf) draw_bar("reading prompt", 0.0f, -1.0, 0, (long)n_new_total); /* appear at once */
-        for (int off = n_keep; off < n_tok; off += CHUNK) {
+        /* NOTE: off advances by n_new — the tokens actually decoded — NOT by CHUNK.
+         * v0.5.1..v0.5.4 advanced by CHUNK even for the 4-token calibration batch,
+         * silently SKIPPING 28 prompt tokens: the model never saw them, and the
+         * shifted cache mirror made every next turn's prefix match die at ~token 4,
+         * re-reading the whole prompt ("caching is failing"). */
+        for (int off = n_keep; off < n_tok; ) {
             if (interrupt_pending()) { c->pf_active = 0; if (show_pf) clear_bar(); return 0; }
             /* A small first batch calibrates the per-token rate fast, so the bar starts moving
              * within seconds instead of sitting at 0% for the whole first 32-token batch. */
@@ -492,7 +535,8 @@ extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *gram
                 return -1;
             }
             for (int i = off; i < off + n_new; i++) c->cached.push_back(toks[i]);
-            c->pf_base = (long)(off + n_new - n_keep);
+            off += n_new;
+            c->pf_base = (long)(off - n_keep);
             if (show_pf) {   /* exact frame at the batch boundary */
                 double frac = (double)c->pf_base / (double)n_new_total;
                 double el = plat_time_sec() - c->pf_t0;
@@ -503,6 +547,8 @@ extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *gram
         c->pf_active = 0;
         if (show_pf) clear_bar();
     }
+    /* The KV cache now covers exactly the prompt text (generation appends below). */
+    c->cached_text.assign(prompt, plen);
 
     /* Persist the prefill KV once per cold start, but only when this turn actually did
      * the expensive prefill (>64 new tokens) - i.e. no cache covered it. Captures the
@@ -559,8 +605,6 @@ extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *gram
         if (on_token) on_token(std::string(buf, (size_t)np).c_str(), ud);
         c->last_completion_tokens++;
 
-        c->cached.push_back(id);
-
         if (llama_memory_seq_pos_max(mem, 0) + 1 >= n_ctx) break; /* out of room */
         llama_token cur = id;
         llama_batch b = llama_batch_get_one(&cur, 1);
@@ -584,15 +628,20 @@ extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *gram
         }
         if (dec != 0) {
             if (interrupt_pending()) {
-                /* Aborted mid-decode by Ctrl+C: the just-emitted token is in c->cached
-                 * but its KV entry may be partial, so the mirror and the KV cache can
-                 * disagree. Drop the mirror; the next turn then re-prefills from scratch
-                 * (one slow prompt) rather than reusing a possibly-corrupt prefix. */
+                /* Aborted mid-decode by Ctrl+C: this token's KV entry may be partial,
+                 * so the mirror and the KV cache can disagree. Drop the mirror; the
+                 * next turn then re-prefills from scratch (one slow prompt) rather
+                 * than reusing a possibly-corrupt prefix. */
                 c->cached.clear();
+                c->cached_text.clear();
                 break;                        /* clean stop, keep the partial output */
             }
             rc = -1; break;                   /* genuine decode failure */
         }
+        /* Commit the token only after its forward pass landed in the KV, so the
+         * mirror (and its text) never claim state the cache doesn't hold. */
+        c->cached.push_back(id);
+        c->cached_text.append(buf, (size_t)np);
     }
 
     llama_sampler_free(smpl);

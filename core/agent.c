@@ -86,6 +86,7 @@ void agent_session_init(agent_session *s, const agent_config *cfg) {
     s->last_write = NULL;
     s->turn_prompt_tokens = 0;
     s->turn_completion_tokens = 0;
+    s->chars_per_tok = 3.0;   /* conservative until the first generate measures it */
 }
 
 void agent_session_free(agent_session *s) {
@@ -180,14 +181,15 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
     tctx.ud            = cfg->ud;
     /* Prompt size budget that keeps the RENDERED prompt (system + few-shot +
      * AGENTS.md + history) inside the context window with room left to generate.
-     * Measured in chars at a deliberately low ~3 chars/token so we over-estimate
-     * tokens and shrink early rather than overflow. */
+     * Measured in chars against the session's MEASURED chars/token ratio (updated
+     * after every generate, times a 5% safety margin; 3.0 until first measured).
+     * The old fixed 3-chars/token guess under-used the window by ~25% on real
+     * prompts (~3.6-4.0 chars/token), which made history_shrink rewrite early
+     * history — and invalidate the KV-cache prefix — long before it had to. */
     int ctxt = cfg->ctx_tokens > 0 ? cfg->ctx_tokens : 4096;
-    /* Reserve 1/4 of the window for generation and budget the rest at 3 chars/token.
-     * Dense code/JSON runs ~2.85 chars/token, so reserving a *proportional* slice
-     * keeps the rendered prompt below the window for any ctx (a fixed reserve could
-     * be outgrown at very large ctx). */
-    size_t max_prompt_chars = (size_t)(ctxt - ctxt / 4) * 3;
+    /* Reserve 1/4 of the window for generation and budget the rest. The reserve is
+     * proportional so the rendered prompt stays below the window for any ctx. */
+    size_t max_prompt_chars = (size_t)((double)(ctxt - ctxt / 4) * s->chars_per_tok);
 
     s->turn_prompt_tokens = 0;
     s->turn_completion_tokens = 0;
@@ -207,6 +209,7 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
         /* Render, and if the prompt would overflow the context window, shrink the
          * history one step and re-render — repeat until it fits or nothing is left
          * to drop. This is what keeps a long session from wedging the backend. */
+        max_prompt_chars = (size_t)((double)(ctxt - ctxt / 4) * s->chars_per_tok);
         for (;;) {
             prompt_render(&prompt, h, cfg->plan_enabled, active_plan, cfg->project_context, cfg->lean);
             if (prompt.len <= max_prompt_chars) break;
@@ -227,6 +230,15 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
             infer_last_usage(cfg->infer, &pt, &ct);
             s->turn_prompt_tokens = pt;        /* last iteration's prompt size */
             s->turn_completion_tokens += ct;   /* generated tokens summed over the turn */
+            /* Measure the session's real chars/token for the shrink budget. The 0.95
+             * margin absorbs composition drift (denser code later in the session);
+             * the clamps keep one odd measurement from unmooring the budget. */
+            if (pt > 200) {
+                double r = ((double)prompt.len / (double)pt) * 0.95;
+                if (r < 2.5) r = 2.5;
+                if (r > 4.2) r = 4.2;
+                s->chars_per_tok = r;
+            }
         }
 
         /* Ctrl+C during generation: abort the turn without recording or parsing the

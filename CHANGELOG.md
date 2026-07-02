@@ -7,6 +7,44 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-07-02
+
+The "caching is failing" fix: a v0.5.1 regression made every turn after the first
+re-read the whole prompt — worst exactly where it hurts most, the M170.
+
+### Fixed
+- **28 prompt tokens were silently skipped in every large prefill** (v0.5.1–v0.5.4).
+  The smooth prefill bar's 4-token calibration batch decoded 4 tokens but the loop
+  still advanced by the full 32-token chunk, so tokens 5–32 of the new text were never
+  decoded: the model literally never saw them (on a cold start that is a slice of the
+  system prompt), and the KV-cache mirror was left shifted, so the next turn's prefix
+  match died at ~token 4 and **re-read the entire prompt** — the "reading prompt" bar
+  on every turn, minutes long on a Pentium-M. One line: advance by what was decoded.
+  Old `.anchkv` prompt-cache files self-heal (partial match, then re-saved clean).
+- **Turn-to-turn reuse is now exact.** The backend remembers the text its KV cache
+  covers (previous prompt + emitted output); when the next prompt is a literal
+  continuation — the normal case in a conversation — it tokenizes only the appended
+  tail instead of re-tokenizing everything and comparing token IDs (sampled tokens
+  don't always re-tokenize identically, especially grammar-constrained JSON). An
+  in-session turn now prefills just the new user message: ~20-40 tokens, seconds on
+  the M170, no bar. Falls back to the old longest-prefix match after history
+  compaction or for a cache loaded from disk.
+- Generated tokens are committed to the cache mirror only after their forward pass
+  lands, so an out-of-room stop or a mid-decode Ctrl+C can no longer leave the mirror
+  claiming state the KV doesn't hold.
+
+### Changed
+- **The history-compaction budget is measured, not guessed.** The shrink threshold
+  used a fixed 3 chars/token estimate — ~25% pessimistic on real prompts — so long
+  sessions started rewriting (and cache-invalidating) old history well before the
+  context window required it. The session now measures its real chars/token after
+  every generate (with a 5% safety margin) and budgets against that.
+- `history_shrink` no longer elides the tool result the model *just* received (the
+  most recent messages are protected, as they already were for truncation); as a last
+  resort against overflowing the window it still can.
+- `ANACHRON_PROBE_DECODE=1` now also prints per-generate prefill reuse
+  (`prompt=N reused=K new=M`) — this is what pinpointed the regression.
+
 ## [0.5.4] - 2026-07-02
 
 Phase 3 of the UI-polish plan: interaction — the "is it frozen?" fix and the input
@@ -391,7 +429,9 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/BerTobi/Anachron/compare/v0.5.4...v0.5.5
+[0.5.4]: https://github.com/BerTobi/Anachron/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/BerTobi/Anachron/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/BerTobi/Anachron/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/BerTobi/Anachron/compare/v0.5.0...v0.5.1
