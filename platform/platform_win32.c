@@ -13,6 +13,7 @@
 #include "strbuf.h"
 
 #include <windows.h>
+#include <wininet.h>   /* plat_http_get for /update; wininet.dll ships with every XP */
 #include <direct.h>
 #include <io.h>
 #include <stdio.h>
@@ -161,6 +162,61 @@ double plat_time_sec(void) {
     /* GetTickCount is XP-safe (ms since boot, wraps ~49 days — fine for our
      * per-turn timing). GetTickCount64 is Vista+ and deliberately avoided. */
     return (double)GetTickCount() / 1000.0;
+}
+
+int plat_self_path(char *buf, size_t n) {
+    DWORD r = GetModuleFileNameA(NULL, buf, (DWORD)n);
+    return (r > 0 && r < (DWORD)n) ? 0 : -1;
+}
+
+int plat_move_file(const char *from, const char *to) {
+    /* MoveFileEx may rename the RUNNING exe (its file object stays open under the
+     * new name) — that is exactly the self-update pivot. Replaces `to` if present. */
+    return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING) ? 0 : -1;
+}
+
+/* HTTP(S) GET through WinINet (XP-safe: all of these exist since IE3). Whether a
+ * modern https host is REACHABLE depends on the OS's Schannel patch level — stock
+ * XP SP3 tops out at TLS 1.0, so github.com refuses it; POSReady-patched systems
+ * can succeed. Callers must treat failure as normal and fall back. */
+int plat_http_get(const char *url, char **body, size_t *body_len,
+                  char *errbuf, size_t errsz) {
+    if (errbuf && errsz) errbuf[0] = '\0';
+    HINTERNET net = InternetOpenA("anachron-updater",
+                                  INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+    if (!net) {
+        if (errbuf) snprintf(errbuf, errsz, "InternetOpen failed (err %lu)", GetLastError());
+        return -1;
+    }
+    HINTERNET req = InternetOpenUrlA(net, url, NULL, 0,
+                                     INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE |
+                                     INTERNET_FLAG_NO_UI, 0);
+    if (!req) {
+        if (errbuf) snprintf(errbuf, errsz, "could not connect (err %lu - on stock XP "
+                             "this is usually the TLS ceiling)", GetLastError());
+        InternetCloseHandle(net);
+        return -1;
+    }
+    DWORD status = 0, slen = sizeof status;
+    if (HttpQueryInfoA(req, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+                       &status, &slen, NULL) && status != 200) {
+        if (errbuf) snprintf(errbuf, errsz, "HTTP %lu", status);
+        InternetCloseHandle(req);
+        InternetCloseHandle(net);
+        return -1;
+    }
+    strbuf acc; sb_init(&acc);
+    char chunk[8192];
+    DWORD got = 0;
+    while (InternetReadFile(req, chunk, sizeof chunk, &got) && got > 0)
+        sb_append_n(&acc, chunk, (size_t)got);
+    InternetCloseHandle(req);
+    InternetCloseHandle(net);
+    *body = xmalloc(acc.len + 1);
+    memcpy(*body, sb_cstr(&acc), acc.len + 1);
+    *body_len = acc.len;
+    sb_free(&acc);
+    return 0;
 }
 
 #endif /* _WIN32 */

@@ -29,6 +29,8 @@ typedef struct {
     int         lean;            /* 1 = terse (lean) system prompt + few-shot; faster prefill */
     int         diff_colour;     /* 1 = ANSI-colour the diff shown on edits */
     void      (*on_diff)(const char *diff, void *ud); /* nullable: diff shown on edit */
+    /* nullable: successful write/edit accounting (added/removed lines) for /files */
+    void      (*on_file_change)(const char *rel, int added, int removed, int created, void *ud);
     void      (*on_log)(const char *text, void *ud);  /* nullable debug log sink */
 
     /* UI hooks (all nullable). Called in loop order so the front-end can render

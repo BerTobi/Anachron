@@ -477,6 +477,61 @@ static void print_turn_stats(ui *u, double secs, const agent_session *s) {
     fflush(u->out);
 }
 
+/* ---- modified-files summary (for /files) -------------------------------- */
+#define FILES_MAX 64
+
+typedef struct { char *path; int adds, dels, writes, created; } file_stat;
+static file_stat g_files[FILES_MAX];
+static int       g_files_n = 0;
+
+/* tool-layer callback: accumulate per-file adds/dels across the session. */
+static void ui_file_change(const char *rel, int added, int removed, int created, void *ud) {
+    (void)ud;
+    for (int i = 0; i < g_files_n; i++) {
+        if (strcmp(g_files[i].path, rel) == 0) {
+            g_files[i].adds += added;
+            g_files[i].dels += removed;
+            g_files[i].writes++;
+            g_files[i].created |= created;
+            return;
+        }
+    }
+    if (g_files_n == FILES_MAX) return;   /* table full: stop tracking new paths */
+    g_files[g_files_n].path = xstrdup(rel);
+    g_files[g_files_n].adds = added;
+    g_files[g_files_n].dels = removed;
+    g_files[g_files_n].writes = 1;
+    g_files[g_files_n].created = created;
+    g_files_n++;
+}
+
+static void files_render(ui *u) {
+    fputc('\n', u->out);
+    ui_span(u, CR_TITLE, "files changed this session"); fputc('\n', u->out);
+    if (g_files_n == 0) {
+        ui_style(u, CR_MUTED); fputs("  none yet\n", u->out); ui_reset(u);
+        return;
+    }
+    int w = 0;
+    for (int i = 0; i < g_files_n; i++) {
+        int l = (int)strlen(g_files[i].path);
+        if (l > w) w = l;
+    }
+    if (w > 40) w = 40;
+    for (int i = 0; i < g_files_n; i++) {
+        fprintf(u->out, "  %-*s  ", w, g_files[i].path);
+        ui_style(u, CR_ADD);    fprintf(u->out, "+%-4d", g_files[i].adds);   ui_reset(u);
+        fputc(' ', u->out);
+        ui_style(u, CR_REMOVE); fprintf(u->out, "-%-4d", g_files[i].dels);   ui_reset(u);
+        ui_style(u, CR_MUTED);
+        if (g_files[i].created) fputs("  created", u->out);
+        if (g_files[i].writes > 1) fprintf(u->out, "  (%d writes)", g_files[i].writes);
+        ui_reset(u);
+        fputc('\n', u->out);
+    }
+    fflush(u->out);
+}
+
 /* ---- session stats (for /stats) ---------------------------------------- */
 #define STAT_HIST 24   /* per-turn generated-token history kept for the graph */
 
@@ -658,6 +713,229 @@ static void run_shell_escape(ui *u, const char *cmd, const char *sandbox) {
         ui_style(u, CR_MUTED); fprintf(u->out, "  exit code %d\n", code); ui_reset(u);
     }
     free(out);
+}
+
+/* ---- /update: self-update ---------------------------------------------------
+ * Sources, in order: a newer anachron-X.Y.Z*.exe already sitting in updates\ or the
+ * current folder (the offline flow — download one file anywhere, drop it in), else
+ * the GitHub releases API over the platform's HTTP stack (works where the OS can
+ * speak modern TLS; stock XP can't reach github.com, and says so). The install is
+ * the classic Windows swap: rename the RUNNING exe aside (legal), copy the new one
+ * into its place, restart. anachron-old.exe is cleaned up on the next start. */
+
+#define UPDATE_REPO_API "https://api.github.com/repos/BerTobi/Anachron/releases/latest"
+
+/* Parse "X.Y.Z" out of `s` (skips to the first digit). 0 on success. */
+static int parse_ver(const char *s, int v[3]) {
+    while (*s && (*s < '0' || *s > '9')) s++;
+    return sscanf(s, "%d.%d.%d", &v[0], &v[1], &v[2]) == 3 ? 0 : -1;
+}
+
+static int ver_cmp(const int a[3], const int b[3]) {
+    for (int i = 0; i < 3; i++)
+        if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+    return 0;
+}
+
+/* Scan `dir` for the newest anachron-X.Y.Z*.exe with version > *best; on a hit,
+ * update *best and replace *pick (malloc'd path). */
+static void scan_updates_dir(const char *dir, int best[3], char **pick) {
+    plat_dirlist dl;
+    if (plat_list_dir(dir, &dl) != 0) return;
+    for (size_t i = 0; i < dl.count; i++) {
+        const char *nm = dl.names[i];
+        size_t L = strlen(nm);
+        if (dl.is_dir[i] || L < 13 || strncmp(nm, "anachron-", 9) != 0) continue;
+        const char *ext = nm + L - 4;
+        if (ext[0] != '.' || (ext[1] | 32) != 'e' || (ext[2] | 32) != 'x' || (ext[3] | 32) != 'e')
+            continue;
+        int v[3];
+        if (parse_ver(nm + 9, v) != 0) continue;   /* anachron-stub/-old have no version */
+        if (ver_cmp(v, best) <= 0) continue;
+        char path[1024];
+        int r = (strcmp(dir, ".") == 0)
+                ? snprintf(path, sizeof path, "%s", nm)
+                : snprintf(path, sizeof path, "%s/%s", dir, nm);
+        if (r < 0 || (size_t)r >= sizeof path) continue;
+        memcpy(best, v, 3 * sizeof *v);
+        free(*pick);
+        *pick = xstrdup(path);
+    }
+    plat_dirlist_free(&dl);
+}
+
+/* Ask the GitHub API for the latest release; if it is newer, download its
+ * *-winxp.exe asset into updates\. Returns a malloc'd path or NULL (message printed). */
+static char *github_fetch_update(ui *u, const int cur[3], int got[3]) {
+    char err[160];
+    char *body = NULL; size_t blen = 0;
+    ui_style(u, CR_MUTED); fputs("checking github.com for the latest release...\n", u->out);
+    ui_reset(u); fflush(u->out);
+    if (plat_http_get(UPDATE_REPO_API, &body, &blen, err, sizeof err) != 0) {
+        ui_style(u, CR_MUTED);
+        fprintf(u->out, "  can't reach GitHub from here: %s\n", err);
+        ui_reset(u);
+        return NULL;
+    }
+    char *pick = NULL;
+    json_value *v = json_parse(body, NULL);
+    free(body);
+    const char *tag = v ? json_as_str(json_obj_get(v, "tag_name")) : NULL;
+    if (!tag || parse_ver(tag, got) != 0) {
+        fprintf(u->out, "  unexpected answer from GitHub (no release tag)\n");
+        json_free(v);
+        return NULL;
+    }
+    if (ver_cmp(got, cur) <= 0) {
+        fprintf(u->out, "already the newest release (%s)\n", tag);
+        json_free(v);
+        return NULL;
+    }
+    const char *dl_url = NULL, *dl_name = NULL;
+    const json_value *assets = json_obj_get(v, "assets");
+    if (assets && assets->type == JSON_ARRAY) {
+        for (size_t i = 0; i < assets->count && !dl_url; i++) {
+            const char *nm = json_as_str(json_obj_get(assets->items[i], "name"));
+            size_t L = nm ? strlen(nm) : 0;
+            if (L > 10 && strcmp(nm + L - 10, "-winxp.exe") == 0) {
+                dl_url = json_as_str(json_obj_get(assets->items[i], "browser_download_url"));
+                dl_name = nm;
+            }
+        }
+    }
+    if (!dl_url) {
+        fprintf(u->out, "  release %s has no -winxp.exe asset\n", tag);
+        json_free(v);
+        return NULL;
+    }
+    fprintf(u->out, "  %s is available - downloading %s (a few MB)...\n", tag, dl_name);
+    fflush(u->out);
+    char *exe = NULL; size_t elen = 0;
+    if (plat_http_get(dl_url, &exe, &elen, err, sizeof err) != 0 || elen < 1024) {
+        fprintf(u->out, "  download failed: %s\n", err[0] ? err : "truncated file");
+        free(exe);
+        json_free(v);
+        return NULL;
+    }
+    plat_mkdir("updates");
+    char path[256];
+    snprintf(path, sizeof path, "updates/anachron-%d.%d.%d-winxp.exe",
+             got[0], got[1], got[2]);
+    int wr = plat_write_file(path, exe, elen);
+    free(exe);
+    json_free(v);
+    if (wr != 0) {
+        fprintf(u->out, "  could not save the download to %s\n", path);
+        return NULL;
+    }
+    fprintf(u->out, "  saved %s (%lu KB)\n", path, (unsigned long)(elen / 1024));
+    pick = xstrdup(path);
+    return pick;
+}
+
+static void cmd_update(ui *u) {
+    int cur[3];
+    parse_ver(ANACHRON_VERSION, cur);
+    fprintf(u->out, "current version: %s\n", ANACHRON_VERSION);
+
+    /* 1) A release exe someone already dropped nearby? (works fully offline) */
+    int best[3] = { cur[0], cur[1], cur[2] };
+    char *cand = NULL;
+    scan_updates_dir("updates", best, &cand);
+    scan_updates_dir(".", best, &cand);
+
+    /* 2) Otherwise ask GitHub (reachable where the OS speaks modern TLS). */
+    if (!cand) {
+        int got[3];
+        cand = github_fetch_update(u, cur, got);
+        if (cand) memcpy(best, got, sizeof got);
+    }
+    if (!cand) {
+        ui_style(u, CR_MUTED);
+#ifdef _WIN32
+        fputs("No newer version found here.\n"
+              "Offline flow: on any machine, download the newest anachron-<ver>-winxp.exe\n"
+              "from github.com/BerTobi/Anachron/releases, drop it into an  updates\\  folder\n"
+              "next to anachron.exe, and run /update again.\n", u->out);
+#else
+        fputs("This build runs from source - update with:  git pull && make llama\n", u->out);
+#endif
+        ui_reset(u);
+        return;
+    }
+
+    /* Validate: the candidate must run and report the version its name claims. */
+    fprintf(u->out, "found %s\n", cand);
+    {
+        strbuf vc; sb_init(&vc);
+        sb_appendf(&vc, "\"%s\" --version", cand);
+        char *out = NULL; size_t olen = 0; int code = -1;
+        int rr = plat_run_command(sb_cstr(&vc), ".", &out, &olen, &code);
+        sb_free(&vc);
+        int rep[3];
+        int okv = (rr == 0 && code == 0 && out && parse_ver(out, rep) == 0);
+        free(out);
+        if (!okv) {
+            ui_style(u, CR_ERR);
+            fputs("  the file did not run / report a version - not installing it.\n", u->out);
+            ui_reset(u);
+            free(cand);
+            return;
+        }
+        if (ver_cmp(rep, cur) <= 0) {
+            fprintf(u->out, "  it reports %d.%d.%d, which is not newer - nothing to do.\n",
+                    rep[0], rep[1], rep[2]);
+            free(cand);
+            return;
+        }
+        memcpy(best, rep, sizeof rep);   /* the binary's own answer is the truth */
+    }
+
+    /* Install: move the running exe aside (allowed), copy the new one into place. */
+    char self[1024];
+    if (plat_self_path(self, sizeof self) != 0) {
+        ui_style(u, CR_ERR); fputs("  cannot locate my own executable\n", u->out); ui_reset(u);
+        free(cand);
+        return;
+    }
+    char oldp[1024];
+    {
+        snprintf(oldp, sizeof oldp, "%s", self);
+        char *sl = strrchr(oldp, '/');
+        char *bs = strrchr(oldp, '\\');
+        if (bs > sl) sl = bs;
+        size_t dirlen = sl ? (size_t)(sl - oldp + 1) : 0;
+        snprintf(oldp + dirlen, sizeof oldp - dirlen, "anachron-old.exe");
+    }
+    char *newexe = NULL; size_t nlen = 0;
+    if (plat_read_file(cand, &newexe, &nlen) != 0) {
+        ui_style(u, CR_ERR); fprintf(u->out, "  cannot read %s\n", cand); ui_reset(u);
+        free(cand);
+        return;
+    }
+    remove(oldp);   /* stale leftover from an earlier update, if any */
+    if (plat_move_file(self, oldp) != 0) {
+        ui_style(u, CR_ERR);
+        fputs("  could not move the running executable aside - not installing.\n", u->out);
+        ui_reset(u);
+        free(newexe); free(cand);
+        return;
+    }
+    if (plat_write_file(self, newexe, nlen) != 0) {
+        plat_move_file(oldp, self);   /* put the old exe back */
+        ui_style(u, CR_ERR);
+        fputs("  could not write the new executable - the old one was restored.\n", u->out);
+        ui_reset(u);
+        free(newexe); free(cand);
+        return;
+    }
+    free(newexe);
+    ui_style(u, CR_OK);
+    fprintf(u->out, "Updated to %d.%d.%d.", best[0], best[1], best[2]);
+    ui_reset(u);
+    fputs("  Restart ANACHRON to use it (this session continues on "
+          ANACHRON_VERSION ").\n", u->out);
+    free(cand);
 }
 
 /* Probe for a C compiler so the verify-on-write guardrail can do a syntax check.
@@ -1087,7 +1365,9 @@ static cmd_result handle_command(const char *line, agent_session *s,
         help_row(u, "/resume <name>","load a saved conversation");
         ui_span(u, CR_TITLE, "session"); fputc('\n', u->out);
         help_row(u, "/model [path]", "switch models (no path: pick from a list)");
+        help_row(u, "/files",        "files changed this session (+added -removed)");
         help_row(u, "/stats",        "session token + throughput stats");
+        help_row(u, "/update",       "update ANACHRON (GitHub, or an updates\\ folder)");
         help_row(u, "!<command>",    "run a shell command in the sandbox (no model)");
         help_row(u, "/help",         "show this help");
         help_row(u, "/quit, /exit",  "leave");
@@ -1131,6 +1411,16 @@ static cmd_result handle_command(const char *line, agent_session *s,
 
     if (strcmp(verb, "/stats") == 0) {
         stats_render(u, stats);
+        return CMD_HANDLED;
+    }
+
+    if (strcmp(verb, "/files") == 0) {
+        files_render(u);
+        return CMD_HANDLED;
+    }
+
+    if (strcmp(verb, "/update") == 0) {
+        cmd_update(u);
         return CMD_HANDLED;
     }
 
@@ -1431,6 +1721,20 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* Clean up the previous binary a /update swap left behind (best effort; if it
+     * is still locked this run, the next start gets it). */
+    {
+        char self[1024];
+        if (plat_self_path(self, sizeof self) == 0) {
+            char *sl = strrchr(self, '/');
+            char *bs = strrchr(self, '\\');
+            if (bs > sl) sl = bs;
+            size_t dirlen = sl ? (size_t)(sl - self + 1) : 0;
+            snprintf(self + dirlen, sizeof self - dirlen, "anachron-old.exe");
+            remove(self);
+        }
+    }
+
     if (!grammar_path)
         grammar_path = plan_enabled ? "grammars/toolcall-plan.gbnf" : "grammars/toolcall.gbnf";
 
@@ -1508,6 +1812,7 @@ int main(int argc, char **argv) {
     cfg.lean = lean;   /* terse prompt (--lean / ANACHRON_LEAN); faster first-turn prefill */
     cfg.diff_colour = 0;   /* diff text stays plain; ui_diff() colours it per-line (both backends) */
     cfg.on_diff = ui_diff;
+    cfg.on_file_change = ui_file_change;   /* /files session summary */
     cfg.on_log = logf ? ui_log : NULL;
     cfg.ud = &u;
     cfg.on_iter_start = ui_iter_start;   /* resets the streaming renderer each generation */

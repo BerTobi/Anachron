@@ -178,6 +178,7 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
     tctx.verify_cc     = cfg->verify_cc;
     tctx.diff_colour   = cfg->diff_colour;
     tctx.on_diff       = cfg->on_diff;
+    tctx.on_file_change = cfg->on_file_change;
     tctx.ud            = cfg->ud;
     /* Prompt size budget that keeps the RENDERED prompt (system + few-shot +
      * AGENTS.md + history) inside the context window with room left to generate.
@@ -210,11 +211,16 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
          * history one step and re-render — repeat until it fits or nothing is left
          * to drop. This is what keeps a long session from wedging the backend. */
         max_prompt_chars = (size_t)((double)(ctxt - ctxt / 4) * s->chars_per_tok);
+        int shrunk = 0;
         for (;;) {
             prompt_render(&prompt, h, cfg->plan_enabled, active_plan, cfg->project_context, cfg->lean);
             if (prompt.len <= max_prompt_chars) break;
             if (!history_shrink(h)) break;
+            shrunk = 1;
         }
+        /* Surface compaction: silently rewriting history on a 4k window reads as the
+         * agent "forgetting" — say so instead (also explains the one slower prefill). */
+        if (shrunk) NOTICE(cfg, "context is filling up - compacted older history to fit");
         log_kv(cfg, "request", sb_cstr(&prompt));
 
         /* Mode-gate: once a plan is recorded, switch to the plan-free grammar so the

@@ -198,14 +198,32 @@ static char *commit_write(const tool_ctx *ctx, const char *rel, const char *cont
     }
 
     if (existed) snapshot(abs, prior, prior_len);
-    /* Show the user (not the model) what changed in an existing file. */
-    if (existed && ctx->on_diff) {
+    /* Show the user (not the model) what changed in an existing file, and count the
+     * added/removed lines for the /files session summary. */
+    int adds = 0, dels = 0;
+    if (existed && (ctx->on_diff || ctx->on_file_change)) {
         strbuf d; sb_init(&d);
         sb_appendf(&d, "%s %s:\n", verb, rel);
-        if (diff_unified(prior, content, &d, ctx->diff_colour))
-            ctx->on_diff(sb_cstr(&d), ctx->ud);
+        if (diff_unified(prior, content, &d, ctx->diff_colour)) {
+            for (const char *q = sb_cstr(&d); *q; ) {
+                if      (q[0] == '+') adds++;
+                else if (q[0] == '-') dels++;
+                const char *nl = strchr(q, '\n');
+                if (!nl) break;
+                q = nl + 1;
+            }
+            if (adds == 0 && dels == 0) {   /* "(diff omitted: too large)" - rough count */
+                for (const char *q = content; *q; q++) if (*q == '\n') adds++;
+                for (const char *q = prior;   *q; q++) if (*q == '\n') dels++;
+            }
+            if (ctx->on_diff) ctx->on_diff(sb_cstr(&d), ctx->ud);
+        }
         sb_free(&d);
+    } else if (!existed) {
+        for (const char *q = content; *q; q++) if (*q == '\n') adds++;
+        if (len > 0 && content[len - 1] != '\n') adds++;   /* unterminated last line */
     }
+    if (ctx->on_file_change) ctx->on_file_change(rel, adds, dels, !existed, ctx->ud);
     free(prior); free(abs);
     *ok = 1;
     strbuf sb; sb_init(&sb);

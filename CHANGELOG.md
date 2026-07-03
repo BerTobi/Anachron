@@ -7,6 +7,41 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-03
+
+Phase 4 of the UI-polish plan (session awareness) — and a self-updater, so a new
+release no longer means re-downloading by hand.
+
+### Added
+- **`/update` — ANACHRON updates itself.** Two sources, newest wins:
+  1. **GitHub releases**, over the platform's own HTTP stack (WinINet — ships with
+     every XP). Whether github.com is *reachable* depends on the OS: stock XP SP3
+     tops out at TLS 1.0 so it fails there (and says so plainly); POSReady-patched
+     systems and newer Windows work.
+  2. **An `updates\` folder** next to the exe — the fully-offline flow: download the
+     newest `anachron-<ver>-winxp.exe` release asset on any machine, drop it in,
+     run `/update`.
+  The candidate is validated by actually running it (`--version` must report a newer
+  version than the current one — the filename is only a hint), then installed with
+  the classic Windows swap: the *running* exe is renamed aside (legal), the new one
+  copied into its place, and `anachron-old.exe` is cleaned up on the next start. A
+  failed install restores the original. POSIX builds print the from-source line
+  (`git pull && make llama`). Settings, models, and the work folder are untouched.
+- **`/files`** — what changed this session: per-file `+added -removed`, with
+  `created` and write-count annotations. Fed by a new `on_file_change` accounting
+  callback from the tool layer (rough line counts when a diff is too large to render).
+- **Compaction is no longer silent.** When history has to be compacted to fit the
+  context window, a notice says so — before this, the agent just seemed to forget
+  (and the next prefill was mysteriously slower).
+
+### Notes
+- P4's "markdown → colour for assistant text" was evaluated and skipped: the 0.5B's
+  replies are 1-3 plain lines — there is nothing to colour. This completes the
+  four-phase polish plan.
+- `ANACHRON_VERSION` can be overridden at build time (`-DANACHRON_VERSION='"9.9.9"'`)
+  for update-flow testing.
+- New Windows import: `wininet.dll` (an IE component, present on every XP).
+
 ## [0.5.5] - 2026-07-02
 
 The "caching is failing" fix: a v0.5.1 regression made every turn after the first
@@ -429,7 +464,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.5.5...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/BerTobi/Anachron/compare/v0.5.5...v0.6.0
 [0.5.5]: https://github.com/BerTobi/Anachron/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/BerTobi/Anachron/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/BerTobi/Anachron/compare/v0.5.2...v0.5.3

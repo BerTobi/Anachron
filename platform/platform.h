@@ -58,4 +58,21 @@ int  plat_run_command(const char *cmd, const char *cwd,
 /* Monotonic-ish seconds for timing. XP-safe (GetTickCount, not GetTickCount64). */
 double plat_time_sec(void);
 
+/* Absolute path of the running executable (for the self-updater). */
+int  plat_self_path(char *buf, size_t n);
+
+/* Move/rename `from` to `to`, replacing an existing `to`. On Windows this works
+ * even when `from` is the RUNNING executable (a running exe may be renamed but
+ * not overwritten) — the pivot of the self-update swap. */
+int  plat_move_file(const char *from, const char *to);
+
+/* HTTP(S) GET via the platform's own stack: WinINet on Windows (present on every
+ * XP with IE; TLS reach depends on the OS patch level — stock XP SP3 cannot speak
+ * TLS 1.2, so github.com fails there and the caller falls back to the local
+ * updates folder). POSIX builds have no HTTP on purpose (they build from source)
+ * and always return non-zero. On failure `errbuf` (if given) gets a short reason.
+ * On success *body is malloc'd (nul-terminated; *body_len excludes it). */
+int  plat_http_get(const char *url, char **body, size_t *body_len,
+                   char *errbuf, size_t errsz);
+
 #endif /* ANACHRON_PLATFORM_H */

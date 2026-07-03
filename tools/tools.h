@@ -16,6 +16,10 @@ typedef struct {
      * UI — it is NOT fed back to the model. on_diff NULL disables the display. */
     int         diff_colour;
     void      (*on_diff)(const char *diff, void *ud);
+    /* Optional: called after every successful write/edit with the change's size
+     * (added/removed lines; `created` = the file did not exist before). Drives the
+     * front-end's /files summary. NULL disables the accounting. */
+    void      (*on_file_change)(const char *rel, int added, int removed, int created, void *ud);
     void       *ud;
 } tool_ctx;
 

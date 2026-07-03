@@ -40,6 +40,8 @@ IN A SESSION
   - Type a task and press Enter. /help lists commands, /quit exits.
   - Before writing a file or running a command it asks:  [y/N]   (Enter = No.)
   - /model         switch models - lists what's in models\ and lets you pick.
+  - /files         what changed this session (+added -removed per file).
+  - /update        update ANACHRON itself (see UPDATING below).
   - @path\to\file  attach a file to your message.
   - !dir           a line starting with ! runs as a shell command (no model).
   - A line ending in \  continues on the next line (multiline input).
@@ -47,6 +49,17 @@ IN A SESSION
     text: the current token's progress, elapsed time, and speed. Not frozen!
   - The FIRST turn is slow (reads the whole prompt). After that a cache file is
     written next to the model and reused, so later runs start in seconds.
+
+
+UPDATING
+  Type  /update  in a session. It tries two things, newest wins:
+  1. github.com - works if this machine's Windows can speak modern TLS
+     (stock XP SP3 cannot; POSReady-patched systems often can).
+  2. An  updates\  folder next to anachron.exe: on any machine, download the
+     newest  anachron-<version>-winxp.exe  from
+     github.com/BerTobi/Anachron/releases, drop it in updates\, run /update.
+  Either way it checks the new exe actually runs, swaps it in, and tells you to
+  restart. Your model, settings and work folder are untouched.
 
 
 PREFER THE COMMAND LINE?  (cmd.exe, in this folder)

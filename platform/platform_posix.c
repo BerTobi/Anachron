@@ -158,4 +158,24 @@ double plat_time_sec(void) {
     return (double)time(NULL);
 }
 
+int plat_self_path(char *buf, size_t n) {
+    ssize_t r = readlink("/proc/self/exe", buf, n - 1);
+    if (r <= 0) return -1;
+    buf[r] = '\0';
+    return 0;
+}
+
+int plat_move_file(const char *from, const char *to) {
+    return rename(from, to) == 0 ? 0 : -1;   /* POSIX rename replaces atomically */
+}
+
+int plat_http_get(const char *url, char **body, size_t *body_len,
+                  char *errbuf, size_t errsz) {
+    /* POSIX builds are built from source; no HTTP stack on purpose. */
+    (void)url; (void)body; (void)body_len;
+    if (errbuf && errsz)
+        snprintf(errbuf, errsz, "this build has no HTTP (it builds from source)");
+    return -1;
+}
+
 #endif /* !_WIN32 */

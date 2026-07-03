@@ -72,7 +72,7 @@ XP_LLAMA_INC = -I$(XP_PREBUILT)/include -I$(XP_PREBUILT)/ggml-include
 XP_STATIC    = $(XP_PREBUILT)/lib/libllama.a $(XP_PREBUILT)/lib/ggml.a \
                $(XP_PREBUILT)/lib/ggml-cpu.a $(XP_PREBUILT)/lib/ggml-base.a
 XP_SYSLIBS = -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 \
-             -luuid -lcomdlg32 -ladvapi32
+             -luuid -lcomdlg32 -ladvapi32 -lwininet
 XP_EXTRA  = -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -D_WIN32_WINNT=0x0501 -DWINVER=0x0501
 XP_LDFLAGS = -static -static-libgcc -static-libstdc++ -mconsole \
              -Wl,--major-subsystem-version=5 -Wl,--minor-subsystem-version=1
@@ -125,7 +125,7 @@ anachron-stub.exe: $(WIN_SRC) $(HEADERS)
 	    -D_WIN32_WINNT=0x0501 -DWINVER=0x0501 \
 	    -static -mconsole \
 	    -Wl,--major-subsystem-version=5 -Wl,--minor-subsystem-version=1 \
-	    $(WIN_SRC) -o $@
+	    $(WIN_SRC) -lwininet -o $@
 	@echo "Built anachron-stub.exe — STUB backend (no model). For real inference use 'make xp'."
 
 # Real-inference build: C core compiled as C99, the one C++ TU as C++, linked
