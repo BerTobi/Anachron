@@ -106,6 +106,17 @@ OUT=$(ANACHRON_API_URL="http://127.0.0.1:$PORT" ANACHRON_API_KEY="sk-test-123" A
 echo "$OUT" | grep -q 'I looked at the screen' || { echo "FAIL(vision/anthropic): $OUT"; exit 1; }
 echo "ok: screenshot flow (both wire shapes; image lands in the sandbox)"
 
+# 8) fetch: the model GETs a page; the follow-up request must carry the page's
+#    TEXT (entities decoded) with the markup and script stripped. Also exercises
+#    -p print mode: only the final answer lands on stdout.
+OUT=$(ANACHRON_API_URL="http://127.0.0.1:$PORT" \
+      ./anachron -p --model "openai:test-model" --sandbox "$TMP/sb" --yolo "fetchpage" 2>/dev/null)
+test "$OUT" = "Fetched the page." || { echo "FAIL(fetch/-p): got '$OUT'"; exit 1; }
+grep -q 'secret word is xyzzy & nothing else' "$TMP/requests.log" || { echo "FAIL(fetch): text not extracted"; exit 1; }
+grep -q 'should not appear' "$TMP/requests.log" && { echo "FAIL(fetch): script text leaked"; exit 1; }
+grep -q '<h1>' "$TMP/requests.log" && { echo "FAIL(fetch): markup leaked"; exit 1; }
+echo "ok: fetch strips HTML; -p prints only the answer"
+
 # Wire assertions from the server's request log
 python3 - "$TMP/requests.log" <<'EOF'
 import json, sys

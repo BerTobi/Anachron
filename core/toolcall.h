@@ -17,6 +17,7 @@ typedef enum {
     TC_SEARCH,       /* grep text across files */
     TC_GLOB,         /* find files by name pattern */
     TC_SCREENSHOT,   /* capture the screen to a PNG (vision backends see it) */
+    TC_FETCH,        /* GET a URL and return its text (HTML stripped) */
     TC_PLAN,         /* only offered when the plan scaffold is enabled (--plan) */
     TC_FINAL
 } tc_kind;
@@ -28,6 +29,7 @@ typedef struct {
     char   *find;     /* edit: the search ("old") text */
     char   *pattern;  /* search: text to grep; glob: filename wildcard */
     char   *cmd;      /* run_command */
+    char   *url;      /* fetch */
     char   *message;  /* final */
     char   *plan;     /* plan (steps, newline-separated) */
     long    offset;   /* read_file: line offset for paging (0 if absent) */

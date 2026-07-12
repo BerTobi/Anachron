@@ -50,6 +50,10 @@ BIGGER BRAINS: REMOTE INFERENCE AND HOSTED APIS
   Everything else stays the same: the [y/N] gate, /files, the transcript, the
   sandbox. Only the brain moves.
 
+  THE MODEL CAN READ THE WEB (hosted APIs only): a  fetch  tool GETs a page or
+  API and reads it as text (asks [y/N] first). Plain-http and LAN URLs work on
+  stock XP; https needs a TLS-1.2-capable system, same as the APIs themselves.
+
   THE MODEL CAN SEE YOUR SCREEN (hosted APIs only): with an anthropic:/openai:/
   gemini: model, ANACHRON gains a  screenshot  tool. Ask "what is on my screen?"
   or "look at the window behind you and read the error" - it captures the screen

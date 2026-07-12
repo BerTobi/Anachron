@@ -208,6 +208,15 @@ static void block_start(ui *u) {
  * the consent, and the sandbox is the boundary) or with --yolo. Default is NO — a bare
  * Enter, EOF (Ctrl-D), or any non-'y' answer declines; input is flushed first so a
  * stray keystroke typed during generation can't auto-approve. */
+/* -p/--print sink: the final answer (and nothing else) lands on stdout, so the
+ * output is pipeable. Everything else the turn produces is suppressed. */
+static void print_answer(const char *text, void *ud) {
+    (void)ud;
+    fputs(text ? text : "", stdout);
+    fputc('\n', stdout);
+    fflush(stdout);
+}
+
 static int ui_confirm(const tool_call *c, void *ud) {
     ui *u = ud;
     if (u->yolo || !u->interactive) return 1;
@@ -215,6 +224,7 @@ static int ui_confirm(const tool_call *c, void *ud) {
     fputs(c->kind == TC_RUN_COMMAND ? "  run this command? [y/N] "
         : c->kind == TC_WRITE_FILE  ? "  write this file? [y/N] "
         : c->kind == TC_SCREENSHOT  ? "  capture the screen? [y/N] "
+        : c->kind == TC_FETCH       ? "  fetch this URL? [y/N] "
         :                             "  apply this edit? [y/N] ", u->out);
     ui_reset(u);
     fflush(u->out);
@@ -363,6 +373,7 @@ static void ui_tool_call(const tool_call *c, void *ud) {
         case TC_SEARCH:      fprintf(u->out, "> search(%s)", c->pattern ? c->pattern : ""); break;
         case TC_GLOB:        fprintf(u->out, "> glob(%s)", c->pattern ? c->pattern : ""); break;
         case TC_SCREENSHOT:  fprintf(u->out, "> screenshot(%s)", c->path ? c->path : ""); break;
+        case TC_FETCH:       fprintf(u->out, "> fetch(%s)", c->url ? c->url : ""); break;
         case TC_PLAN:        fputs("> plan:", u->out); ui_reset(u);
                              fprintf(u->out, "\n%s\n", c->plan ? c->plan : "");
                              fflush(u->out); return;
@@ -659,6 +670,8 @@ static void usage(const char *prog) {
         "  --max-iters N     tool-loop iteration cap per turn (default 8)\n"
         "  --ctx N           context/history budget in tokens (default 4096 local,\n"
         "                    131072 for API and remote models)\n"
+        "  -p, --print       Unix filter mode: task from arguments and/or piped stdin;\n"
+        "                    only the final answer is printed (pipeable)\n"
         "  --grammar PATH    GBNF grammar to constrain decoding (default chosen by --plan)\n"
         "  --no-grammar      disable grammar constraint\n"
         "  --no-verify       disable the verify-on-write guardrail (revert of bad writes)\n"
@@ -1929,6 +1942,8 @@ int main(int argc, char **argv) {
     int want_color = 1;                  /* gated by TTY + platform below; --no-color forces off */
     int color_force = 0;                 /* --color forces colour even when not a TTY (pipes) */
     int yolo = env_truthy("ANACHRON_YOLO");   /* skip the permission gate (only 1/true/yes/on) */
+    int print_mode = 0;   /* -p/--print: Unix filter mode — task from argv or piped stdin,
+                             ONLY the final answer on stdout (transcript suppressed) */
     int lean = env_truthy("ANACHRON_LEAN");   /* terse prompt for a faster first turn */
 
     /* Config file (agent.json / .anachron.json) sets defaults; CLI flags below
@@ -2003,6 +2018,8 @@ int main(int argc, char **argv) {
             color_force = 1;
         } else if (strcmp(a, "--yolo") == 0 || strcmp(a, "--no-confirm") == 0) {
             yolo = 1;
+        } else if (strcmp(a, "-p") == 0 || strcmp(a, "--print") == 0) {
+            print_mode = 1;
         } else if (strcmp(a, "--lean") == 0) {
             lean = 1;
         } else if (strcmp(a, "--log") == 0 && i + 1 < argc) {
@@ -2050,6 +2067,34 @@ int main(int argc, char **argv) {
         } else {
             if (task.len) sb_putc(&task, ' ');
             sb_append(&task, a);
+        }
+    }
+
+    /* -p/--print with no argv task: the piped stdin IS the task (Unix filter
+     * style: `git diff | anachron -p "review this"` works too, argv + stdin). */
+    if (print_mode && task.len == 0 && plat_isatty_stdin()) {
+        fprintf(stderr, "anachron: -p needs a task (an argument or piped stdin)\n");
+        sb_free(&task);
+        free(owned_model); free(owned_sandbox);
+        free(owned_grammar); free(owned_log);
+        return 2;
+    }
+    if (print_mode && !plat_isatty_stdin()) {
+        strbuf in; sb_init(&in);
+        char inbuf[4096]; size_t n;
+        while ((n = fread(inbuf, 1, sizeof inbuf, stdin)) > 0)
+            sb_append_n(&in, inbuf, n);
+        if (in.len > 0) {
+            if (task.len > 0) sb_append(&task, "\n\n");   /* argv prompt + piped payload */
+            sb_append(&task, sb_cstr(&in));
+        }
+        sb_free(&in);
+        if (task.len == 0) {
+            fprintf(stderr, "anachron: -p got an empty task (no argument, empty stdin)\n");
+            free(owned_model); free(owned_sandbox);
+            free(owned_grammar); free(owned_log);
+            sb_free(&task);
+            return 2;
         }
     }
 
@@ -2175,6 +2220,16 @@ int main(int argc, char **argv) {
     cfg.on_message = ui_message;
     cfg.on_final = ui_final;
     cfg.on_notice = ui_notice;
+    if (print_mode) {   /* Unix filter: only the answer reaches stdout */
+        cfg.on_iter_start = NULL;
+        cfg.on_token = NULL;
+        cfg.on_tool_call = NULL;
+        cfg.on_tool_result = NULL;
+        cfg.on_notice = NULL;
+        cfg.on_diff = NULL;
+        cfg.on_message = print_answer;
+        cfg.on_final = print_answer;
+    }
 
     agent_session session;
     agent_session_init(&session, &cfg);
@@ -2192,7 +2247,7 @@ int main(int argc, char **argv) {
         interrupt_clear();
         u.turn_labeled = 0;
         rc = agent_session_run_turn(&session, msg);
-        print_turn_stats(&u, plat_time_sec() - t0, &session);
+        if (!print_mode) print_turn_stats(&u, plat_time_sec() - t0, &session);
         free(msg);
     } else {
         /* The REPL owns a live sandbox pointer so /new can rotate it in auto mode. */

@@ -51,12 +51,39 @@ PORT = int(sys.argv[1])
 LOGDIR = sys.argv[2]
 cursors = {}
 
+# A task containing "fetchpage" drives the fetch flow: the model GETs a page
+# from this same server, then reports. The page has markup to strip and a
+# distinctive sentence the test asserts survived extraction.
+FETCH_SCRIPT = [
+    "<tool_call>{\"name\": \"fetch\", \"arguments\": {\"url\": "
+    f"\"http://127.0.0.1:{PORT}/page.html\"}}}}</tool_call>",
+    "<tool_call>{\"name\": \"final\", \"arguments\": {\"message\": "
+    "\"Fetched the page.\"}}</tool_call>",
+]
+
+PAGE_HTML = """<!doctype html>
+<html><head><title>Fetch Test</title>
+<style>body { color: red }</style>
+<script>var hidden = "should not appear";</script>
+</head><body>
+<h1>Welcome</h1>
+<p>The secret word is <b>xyzzy</b> &amp; nothing else matters.</p>
+</body></html>"""
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
     def do_GET(self):
+        if self.path == "/page.html":
+            out = PAGE_HTML.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+            return
         # model catalogs (OpenAI shape; Anthropic's /v1/models matches too).
         # fake-embedding-1 must be filtered out by the picker.
         if self.path in ("/v1/models", "/models",
@@ -82,6 +109,8 @@ class Handler(BaseHTTPRequestHandler):
             script, tag = BIG_SCRIPT, "big"
         elif "lookatscreen" in body:
             script, tag = LOOK_SCRIPT, "look"
+        elif "fetchpage" in body:
+            script, tag = FETCH_SCRIPT, "fetch"
         else:
             script, tag = SCRIPT, ""
         key = (self.path, tag)

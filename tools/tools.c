@@ -582,6 +582,119 @@ static char *do_screenshot(const tool_ctx *ctx, const char *rel, int *ok) {
     return out;
 }
 
+/* ---- fetch: GET a URL for the model ------------------------------------- */
+
+/* Case-insensitive "does the tag at p match name" (p points just past '<' or
+ * '</'). A match requires the name to end at a non-letter (so "script" does
+ * not match "scriptx"). */
+static int tag_is(const char *p, const char *name) {
+    size_t n = strlen(name);
+    for (size_t i = 0; i < n; i++)
+        if (tolower((unsigned char)p[i]) != name[i]) return 0;
+    return !isalpha((unsigned char)p[n]);
+}
+
+/* Crude but effective HTML -> text: drops <script>/<style> subtrees and
+ * comments, turns block-level tags into newlines, strips every other tag,
+ * decodes the handful of entities that matter, and collapses blank runs.
+ * Not a parser — good enough to hand a model readable page text. */
+static void html_to_text(const char *in, strbuf *out) {
+    const char *p = in;
+    int nl_run = 2;                       /* swallow leading blank space */
+    while (*p) {
+        if (*p == '<') {
+            if (strncmp(p, "<!--", 4) == 0) {
+                const char *e = strstr(p + 4, "-->");
+                p = e ? e + 3 : p + strlen(p);
+                continue;
+            }
+            if (tag_is(p + 1, "script") || tag_is(p + 1, "style")) {
+                const char *close = tag_is(p + 1, "script") ? "</script" : "</style";
+                const char *e = p + 1;
+                while ((e = strstr(e, "</")) != NULL && !tag_is(e + 2, close + 2)) e += 2;
+                if (!e) break;
+                e = strchr(e, '>');
+                p = e ? e + 1 : p + strlen(p);
+                continue;
+            }
+            const char *tag = p + (p[1] == '/' ? 2 : 1);
+            int block = tag_is(tag, "p") || tag_is(tag, "div") || tag_is(tag, "br") ||
+                        tag_is(tag, "li") || tag_is(tag, "tr") || tag_is(tag, "h1") ||
+                        tag_is(tag, "h2") || tag_is(tag, "h3") || tag_is(tag, "h4") ||
+                        tag_is(tag, "table") || tag_is(tag, "ul") || tag_is(tag, "ol") ||
+                        tag_is(tag, "title") || tag_is(tag, "section") || tag_is(tag, "article");
+            const char *e = strchr(p, '>');
+            if (!e) break;
+            p = e + 1;
+            if (block && nl_run < 2) { sb_putc(out, '\n'); nl_run++; }
+            continue;
+        }
+        if (*p == '&') {
+            static const struct { const char *ent; char ch; } ents[] = {
+                {"&amp;", '&'}, {"&lt;", '<'}, {"&gt;", '>'},
+                {"&quot;", '"'}, {"&#39;", '\''}, {"&apos;", '\''}, {"&nbsp;", ' '},
+            };
+            int hit = 0;
+            for (size_t i = 0; i < sizeof ents / sizeof ents[0]; i++) {
+                size_t n = strlen(ents[i].ent);
+                if (strncmp(p, ents[i].ent, n) == 0) {
+                    sb_putc(out, ents[i].ch);
+                    p += n; hit = 1; nl_run = 0;
+                    break;
+                }
+            }
+            if (hit) continue;
+        }
+        if (*p == '\n') {
+            if (nl_run < 2) { sb_putc(out, '\n'); nl_run++; }
+        } else if (*p != '\r') {
+            sb_putc(out, *p);
+            if (*p != ' ' && *p != '\t') nl_run = 0;
+        }
+        p++;
+    }
+}
+
+#define FETCH_TEXT_CAP 24000   /* chars handed to the model; pages can be huge */
+
+static char *do_fetch(const tool_ctx *ctx, const char *url, int *ok) {
+    (void)ctx;
+    if (strncmp(url, "http://", 7) != 0 && strncmp(url, "https://", 8) != 0)
+        return dup_cstr("ERROR: fetch needs an http:// or https:// URL");
+
+    char err[256];
+    char *resp = NULL; size_t rlen = 0; int status = 0;
+    if (plat_http_get(url, NULL, &resp, &rlen, &status, err, sizeof err) != 0) {
+        strbuf r; sb_init(&r);
+        sb_appendf(&r, "ERROR: fetch failed: %s", err);
+        char *out = dup_cstr(sb_cstr(&r)); sb_free(&r);
+        return out;
+    }
+
+    strbuf text; sb_init(&text);
+    const char *body = resp ? resp : "";
+    /* Sniff HTML: strip to readable text; anything else passes through. */
+    const char *q = body;
+    while (*q == ' ' || *q == '\t' || *q == '\r' || *q == '\n') q++;
+    if (*q == '<') html_to_text(body, &text);
+    else sb_append(&text, body);
+    free(resp);
+
+    strbuf r; sb_init(&r);
+    sb_appendf(&r, "HTTP %d (%lu bytes)\n", status, (unsigned long)rlen);
+    if (text.len > FETCH_TEXT_CAP) {
+        sb_append_n(&r, sb_cstr(&text), FETCH_TEXT_CAP);
+        sb_append(&r, "\n[... page truncated ...]");
+    } else {
+        sb_append(&r, sb_cstr(&text));
+    }
+    sb_free(&text);
+    *ok = status >= 200 && status < 300;
+    char *out = dup_cstr(sb_cstr(&r));
+    sb_free(&r);
+    return out;
+}
+
 char *tools_dispatch(const tool_ctx *ctx, const tool_call *call, int *ok) {
     *ok = 0;
     switch (call->kind) {
@@ -593,6 +706,7 @@ char *tools_dispatch(const tool_ctx *ctx, const tool_call *call, int *ok) {
         case TC_SEARCH:      return do_search(ctx, call->pattern, call->path, ok);
         case TC_GLOB:        return do_glob(ctx, call->pattern, ok);
         case TC_SCREENSHOT:  return do_screenshot(ctx, call->path, ok);
+        case TC_FETCH:       return do_fetch(ctx, call->url, ok);
         default:             return dup_cstr("ERROR: tool not dispatchable");
     }
 }

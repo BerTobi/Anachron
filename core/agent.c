@@ -402,7 +402,8 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
          * gated. A decline is fed back so the model picks another approach. */
         if (cfg->confirm_tool &&
             (call.kind == TC_WRITE_FILE || call.kind == TC_EDIT ||
-             call.kind == TC_RUN_COMMAND || call.kind == TC_SCREENSHOT) &&
+             call.kind == TC_RUN_COMMAND || call.kind == TC_SCREENSHOT ||
+             call.kind == TC_FETCH) &&
             !cfg->confirm_tool(&call, cfg->ud)) {
             const char *msg = "User declined this action. Do NOT retry it - take a different "
                               "approach, or call final to explain what you could not do.";

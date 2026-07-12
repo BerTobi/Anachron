@@ -7,6 +7,22 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-12
+
+### Added
+- **`-p` / `--print`: Unix filter mode.** The task comes from the arguments,
+  piped stdin, or both (`git diff | anachron -p "review this"`); only the final
+  answer is printed to stdout, so the output pipes cleanly into the next
+  command. Diagnostics stay on stderr. This is the "Unix-style composable
+  interface" from the original Claude CLI feature list.
+- **`fetch` tool: the model can read the web.** `fetch {"url": ...}` GETs a
+  page or API over the platform HTTP stack (WinINet on Windows/XP, curl for
+  https on POSIX), strips HTML to readable text (scripts/styles/comments
+  dropped, entities decoded), and caps the result at 24 KB. Gated
+  (`fetch this URL? [y/N]`) since a fetch can carry data off the machine.
+  Offered on hosted-API backends beside `screenshot`; XP TLS caveats apply as
+  usual (plain-http and LAN URLs always work).
+
 ## [0.9.0] - 2026-07-12
 
 ### Added

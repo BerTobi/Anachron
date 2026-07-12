@@ -100,6 +100,12 @@ static void test_toolcall(void) {
     assert(rc == 0 && tc.kind == TC_RUN_COMMAND && strcmp(tc.cmd, "ls") == 0);
     toolcall_free(&tc);
 
+    /* fetch */
+    rc = toolcall_parse("<tool_call>{\"name\":\"fetch\",\"arguments\":"
+                        "{\"url\":\"https://x.test/a\"}}</tool_call>", &tc);
+    assert(rc == 0 && tc.kind == TC_FETCH && strcmp(tc.url, "https://x.test/a") == 0);
+    toolcall_free(&tc);
+
     /* screenshot: path optional, defaults to screenshot.png */
     rc = toolcall_parse("<tool_call>{\"name\":\"screenshot\",\"arguments\":{}}</tool_call>", &tc);
     assert(rc == 0 && tc.kind == TC_SCREENSHOT && strcmp(tc.path, "screenshot.png") == 0);

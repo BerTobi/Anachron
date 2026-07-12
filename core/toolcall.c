@@ -15,6 +15,7 @@ const char *toolcall_kind_name(tc_kind k) {
         case TC_SEARCH:      return "search";
         case TC_GLOB:        return "glob";
         case TC_SCREENSHOT:  return "screenshot";
+        case TC_FETCH:       return "fetch";
         case TC_PLAN:        return "plan";
         case TC_FINAL:       return "final";
         default:             return "none";
@@ -28,6 +29,7 @@ void toolcall_free(tool_call *tc) {
     free(tc->find);
     free(tc->pattern);
     free(tc->cmd);
+    free(tc->url);
     free(tc->message);
     free(tc->plan);
     free(tc->error);
@@ -115,6 +117,10 @@ int toolcall_parse(const char *text, tool_call *out) {
         out->kind = TC_GLOB;
         out->pattern = req_str(args, "pattern");
         ok = out->pattern != NULL;
+    } else if (strcmp(name, "fetch") == 0) {
+        out->kind = TC_FETCH;
+        out->url = req_str(args, "url");
+        ok = out->url != NULL;
     } else if (strcmp(name, "screenshot") == 0) {
         out->kind = TC_SCREENSHOT;
         out->path = req_str(args, "path");            /* optional */
