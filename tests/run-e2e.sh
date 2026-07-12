@@ -39,5 +39,21 @@ OUT=$(ANACHRON_STUB_SCRIPT=tests/agent-deep-script.txt ./anachron --sandbox "$TM
 echo "$OUT" | grep -q 'sub-agents cannot spawn sub-agents' || { echo "FAIL: depth cap not enforced"; exit 1; }
 echo "$OUT" | grep -q 'Depth respected' || { echo "FAIL: parent did not recover from depth refusal"; exit 1; }
 echo "ok: sub-agent depth capped at one level"
+
+# Session persistence: every turn auto-saves; --continue restores it in a new
+# process, and the harness state stays hidden from the model's list_dir.
+SESS=$(mktemp -d)
+ANACHRON_STUB_SCRIPT=tests/demo-script.txt ./anachron --sandbox "$SESS" --yolo "create and verify hello.txt" >/dev/null 2>&1
+test -s "$SESS/.anachron-sessions/last.json" || { echo "FAIL: no auto-saved session"; exit 1; }
+OUT=$(ANACHRON_STUB_SCRIPT=tests/mixed-script.txt ./anachron -c --sandbox "$SESS" --yolo "follow-up" 2>&1)
+echo "$OUT" | grep -q 'resumed previous conversation' || { echo "FAIL: --continue did not resume"; exit 1; }
+python3 -c "
+import json,sys
+d=json.load(open('$SESS/.anachron-sessions/last.json'))
+roles=[m['role'] for m in d]
+assert roles.count('user') >= 2, roles          # both turns' tasks present
+assert 'tool' in roles, roles                    # first turn's tool results survived
+print('ok: --continue restores the auto-saved conversation across processes')"
+rm -rf "$SESS"
 echo
 echo "E2E PASS"

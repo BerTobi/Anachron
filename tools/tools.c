@@ -283,11 +283,13 @@ static char *do_list_dir(const tool_ctx *ctx, const char *rel, int *ok) {
             const char *nm = dl.names[i];
             size_t nl = strlen(nm);
             if (nl >= 6 && strcmp(nm + nl - 6, ".anbak") == 0) continue; /* hide edit backups */
+            if (strncmp(nm, ".anachron", 9) == 0) continue;   /* hide harness state */
             if (shown >= MAX_OBS_LINES) {
                 size_t rem = 0; /* count only the remaining VISIBLE entries */
                 for (size_t j = i; j < dl.count; j++) {
                     const char *n2 = dl.names[j]; size_t l2 = strlen(n2);
-                    if (!(l2 >= 6 && strcmp(n2 + l2 - 6, ".anbak") == 0)) rem++;
+                    if (!(l2 >= 6 && strcmp(n2 + l2 - 6, ".anbak") == 0) &&
+                        strncmp(n2, ".anachron", 9) != 0) rem++;
                 }
                 sb_appendf(&sb, "... (%zu more entr%s not shown)", rem, rem == 1 ? "y" : "ies");
                 break;

@@ -674,6 +674,9 @@ static void usage(const char *prog) {
         "                    131072 for API and remote models)\n"
         "  -p, --print       Unix filter mode: task from arguments and/or piped stdin;\n"
         "                    only the final answer is printed (pipeable)\n"
+        "  -c, --continue    resume the previous conversation in this sandbox (it is\n"
+        "                    auto-saved every turn; with sandbox \"auto\", re-enters the\n"
+        "                    newest session folder)\n"
         "  --grammar PATH    GBNF grammar to constrain decoding (default chosen by --plan)\n"
         "  --no-grammar      disable grammar constraint\n"
         "  --no-verify       disable the verify-on-write guardrail (revert of bad writes)\n"
@@ -1836,6 +1839,54 @@ static char *sandbox_auto_dir(void) {
     return xstrdup("anachron-sessions/overflow");
 }
 
+/* --continue with sandbox "auto": the newest existing session folder (the
+ * stamped names sort chronologically). NULL when there is none yet. */
+static char *sandbox_latest_dir(void) {
+    plat_dirlist dl;
+    if (plat_list_dir("anachron-sessions", &dl) != 0) return NULL;
+    const char *best = NULL;
+    for (size_t i = 0; i < dl.count; i++) {
+        if (!dl.is_dir[i]) continue;
+        if (!best || strcmp(dl.names[i], best) > 0) best = dl.names[i];
+    }
+    char *out = NULL;
+    if (best) {
+        char path[160];
+        snprintf(path, sizeof path, "anachron-sessions/%s", best);
+        out = xstrdup(path);
+    }
+    plat_dirlist_free(&dl);
+    return out;
+}
+
+/* Auto-save the conversation after every turn (to <sandbox>/.anachron-sessions/
+ * last.json — the same store /save and /resume use), so --continue can pick it
+ * up after a quit or a crash. Quiet: persistence must never interrupt a turn. */
+static void session_autosave(const char *sandbox, const agent_session *s) {
+    char *dir = NULL, *path = NULL;
+    if (sessions_dir(sandbox, &dir) != 0) return;
+    plat_mkdir(dir);
+    if (session_path(dir, "last", &path) == 0) {
+        agent_session_save(s, path);
+        free(path);
+    }
+    free(dir);
+}
+
+/* --continue: load <sandbox>/.anachron-sessions/last.json if present.
+ * Returns the number of messages restored (0 = nothing to resume). */
+static size_t session_autoload(const char *sandbox, agent_session *s) {
+    char *dir = NULL, *path = NULL;
+    size_t n = 0;
+    if (sessions_dir(sandbox, &dir) != 0) return 0;
+    if (session_path(dir, "last", &path) == 0) {
+        if (agent_session_load(s, path) == 0) n = s->h.count;
+        free(path);
+    }
+    free(dir);
+    return n;
+}
+
 /* Set an environment variable (the backends read their config from env, so the
  * agent.json keys are forwarded this way). */
 static void set_env_kv(const char *name, const char *value) {
@@ -1946,6 +1997,8 @@ int main(int argc, char **argv) {
     int yolo = env_truthy("ANACHRON_YOLO");   /* skip the permission gate (only 1/true/yes/on) */
     int print_mode = 0;   /* -p/--print: Unix filter mode — task from argv or piped stdin,
                              ONLY the final answer on stdout (transcript suppressed) */
+    int cont = 0;         /* -c/--continue: resume the previous conversation (auto-saved
+                             each turn); with sandbox auto, re-enter the newest session dir */
     int lean = env_truthy("ANACHRON_LEAN");   /* terse prompt for a faster first turn */
 
     /* Config file (agent.json / .anachron.json) sets defaults; CLI flags below
@@ -2022,6 +2075,8 @@ int main(int argc, char **argv) {
             yolo = 1;
         } else if (strcmp(a, "-p") == 0 || strcmp(a, "--print") == 0) {
             print_mode = 1;
+        } else if (strcmp(a, "-c") == 0 || strcmp(a, "--continue") == 0) {
+            cont = 1;
         } else if (strcmp(a, "--lean") == 0) {
             lean = 1;
         } else if (strcmp(a, "--log") == 0 && i + 1 < argc) {
@@ -2155,11 +2210,13 @@ int main(int argc, char **argv) {
      * per tool step; --ctx overrides in either direction. */
     if (!ctx_explicit && spec_networked(model)) ctx = 131072;
 
-    /* "auto": every conversation gets its own fresh folder. */
+    /* "auto": every conversation gets its own fresh folder — unless --continue,
+     * which re-enters the NEWEST existing session folder instead. */
     int sandbox_auto = strcmp(sandbox, "auto") == 0;
     char *owned_auto_sandbox = NULL;
     if (sandbox_auto) {
-        owned_auto_sandbox = sandbox_auto_dir();
+        owned_auto_sandbox = cont ? sandbox_latest_dir() : NULL;
+        if (!owned_auto_sandbox) owned_auto_sandbox = sandbox_auto_dir();
         sandbox = owned_auto_sandbox;
     }
 
@@ -2237,6 +2294,16 @@ int main(int argc, char **argv) {
     agent_session_init(&session, &cfg);
     session_stats stats = {0};
 
+    /* --continue: restore the auto-saved conversation from this sandbox. */
+    if (cont) {
+        size_t n = session_autoload(sandbox, &session);
+        if (!print_mode) {
+            if (n) fprintf(stdout, "resumed previous conversation (%zu messages, %s)\n",
+                           n, sandbox);
+            else   fprintf(stdout, "nothing to resume in %s - starting fresh\n", sandbox);
+        }
+    }
+
     /* Ctrl+C now interrupts the current generation instead of killing the process
      * (a second press still force-quits). */
     interrupt_install();
@@ -2250,6 +2317,7 @@ int main(int argc, char **argv) {
         u.turn_labeled = 0;
         rc = agent_session_run_turn(&session, msg);
         if (!print_mode) print_turn_stats(&u, plat_time_sec() - t0, &session);
+        session_autosave(sandbox, &session);
         free(msg);
     } else {
         /* The REPL owns a live sandbox pointer so /new can rotate it in auto mode. */
@@ -2328,6 +2396,7 @@ int main(int argc, char **argv) {
             double elapsed = plat_time_sec() - t0;
             stats_record(&stats, &session, elapsed);
             print_turn_stats(&u, elapsed, &session);
+            session_autosave(sandbox_live, &session);
             if (interrupt_pending()) { ui_style(&u, CR_WARN); fputs("(interrupted)", stdout); ui_reset(&u); fputc('\n', stdout); }
             interrupt_clear();
             free(msg);

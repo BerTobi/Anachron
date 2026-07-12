@@ -7,6 +7,20 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-12
+
+### Added
+- **Conversations survive quitting: auto-save + `--continue`.** Every turn the
+  conversation is saved to the sandbox's session store (the same place `/save`
+  uses), and `-c`/`--continue` restores it at launch — including in one-shot
+  and `-p` mode, so `anachron -c -p "and now fix the tests"` picks up where the
+  last run stopped. With `"sandbox": "auto"`, `--continue` re-enters the newest
+  session folder instead of stamping a fresh one. Screenshot attachments are
+  preserved (re-attached if the file still exists).
+- The harness's own state (`.anachron-sessions/`, `.anachron*`) is now hidden
+  from the model's `list_dir` (search/glob already skipped dot-entries), so
+  auto-saving doesn't clutter what the model sees.
+
 ## [0.11.0] - 2026-07-12
 
 ### Added

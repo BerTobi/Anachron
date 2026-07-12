@@ -50,6 +50,9 @@ BIGGER BRAINS: REMOTE INFERENCE AND HOSTED APIS
   Everything else stays the same: the [y/N] gate, /files, the transcript, the
   sandbox. Only the brain moves.
 
+  CONVERSATIONS SURVIVE QUITTING: every turn is auto-saved in the working
+  folder; start with  --continue  (or -c) to pick up where you left off.
+
   THE MODEL CAN DELEGATE (hosted APIs only): an  agent  tool runs a sub-agent
   with the same tools but a fresh, separate context and reports back only its
   conclusion - so "summarize every file in src" does not flood the conversation.

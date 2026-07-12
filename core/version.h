@@ -8,7 +8,7 @@
 /* Overridable at build time (-DANACHRON_VERSION='"9.9.9"') so update-flow tests
  * can produce a binary that reports an arbitrary version. */
 #ifndef ANACHRON_VERSION
-#define ANACHRON_VERSION "0.11.0"
+#define ANACHRON_VERSION "0.12.0"
 #endif
 
 #endif /* ANACHRON_VERSION_H */

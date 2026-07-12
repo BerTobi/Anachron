@@ -123,9 +123,16 @@ int agent_session_save(const agent_session *s, const char *path) {
         sb_append(&j, role_name(m->role));
         sb_append(&j, "\",\"text\":\"");
         json_escape(&j, m->text ? m->text : "");
+        sb_append(&j, "\"");
+        if (m->image) {   /* attachment path; reload re-attaches if it still exists */
+            sb_append(&j, ",\"image\":\"");
+            json_escape(&j, m->image);
+            sb_append(&j, "\"");
+        }
         /* Persist the compaction flag too, so a reloaded already-elided tool
          * result isn't needlessly re-elided on the next compaction pass. */
-        sb_append(&j, m->elided ? "\",\"elided\":1}" : "\"}");
+        if (m->elided) sb_append(&j, ",\"elided\":1");
+        sb_append(&j, "}");
     }
     sb_append(&j, "]");
     int rc = plat_write_file(path, sb_cstr(&j), j.len);
@@ -160,6 +167,8 @@ int agent_session_load(agent_session *s, const char *path) {
                    : strcmp(role, "tool") == 0      ? MSG_TOOL_RESULT
                                                     : MSG_USER;
         history_push(&s->h, r, text);
+        const char *img = json_as_str(json_obj_get(o, "image"));
+        if (img && *img) history_attach_image(&s->h, img);
         const json_value *el = json_obj_get(o, "elided");
         if (el && el->type == JSON_NUMBER && el->num != 0 && s->h.count > 0)
             s->h.items[s->h.count - 1].elided = 1;
