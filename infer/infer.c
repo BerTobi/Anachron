@@ -22,7 +22,8 @@ infer_ctx *infer_init(const char *model_spec, int n_ctx) {
     int rc;
     if (starts_with(model_spec, "http://") || starts_with(model_spec, "https://"))
         rc = remote_backend_open(model_spec, n_ctx, &c->be);
-    else if (starts_with(model_spec, "anthropic:") || starts_with(model_spec, "openai:"))
+    else if (starts_with(model_spec, "anthropic:") || starts_with(model_spec, "openai:") ||
+             starts_with(model_spec, "gemini:"))
         rc = api_backend_open(model_spec, n_ctx, &c->be);
     else
 #ifdef ANACHRON_HAVE_LLAMA

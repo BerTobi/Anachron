@@ -52,7 +52,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/completion":
             resp = {"content": text, "tokens_evaluated": 111, "tokens_predicted": 22}
-        elif self.path == "/v1/chat/completions":
+        elif self.path in ("/v1/chat/completions", "/v1beta/openai/chat/completions"):
             resp = {"choices": [{"message": {"role": "assistant", "content": text}}],
                     "usage": {"prompt_tokens": 333, "completion_tokens": 44}}
         elif self.path == "/v1/messages":

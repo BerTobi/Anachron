@@ -619,6 +619,7 @@ static void usage(const char *prog) {
         "                      path/to/model.gguf          local model (llama builds)\n"
         "                      http://host:8080            a LAN llama-server (remote inference)\n"
         "                      anthropic:claude-opus-4-8   the Anthropic API (ANACHRON_API_KEY)\n"
+        "                      gemini:gemini-flash-latest  the Google Gemini API (free-tier keys work)\n"
         "                      openai:MODEL                any OpenAI-compatible endpoint\n"
         "                                                  (ANACHRON_API_URL overrides the base)\n"
         "  --sandbox DIR     working directory tools are confined to (default \".\")\n"
@@ -1298,7 +1299,7 @@ static char *pick_model(void) {
         fprintf(stdout, "Models found in %s:\n", where);
         for (int i = 0; i < n; i++) fprintf(stdout, "  %d) %s\n", i + 1, v[i]);
         fputs("Choose a number, or type a .gguf path / http://server:port / "
-              "anthropic:<model> / openai:<model>: ", stdout);
+              "anthropic:<model> / gemini:<model> / openai:<model>: ", stdout);
     } else {
         fprintf(stdout, "No .gguf models found in %s.\n"
                         "Type a .gguf path, a llama-server URL (http://host:8080), or an\n"
@@ -1321,7 +1322,8 @@ static char *pick_model(void) {
 /* Is the model spec a network backend (LAN llama-server or a hosted API)? */
 static int spec_networked(const char *m) {
     return m && (strncmp(m, "http://", 7) == 0 || strncmp(m, "https://", 8) == 0 ||
-                 strncmp(m, "anthropic:", 10) == 0 || strncmp(m, "openai:", 7) == 0);
+                 strncmp(m, "anthropic:", 10) == 0 || strncmp(m, "openai:", 7) == 0 ||
+                 strncmp(m, "gemini:", 7) == 0);
 }
 
 /* Remember the model's display name for the status band: a GGUF path's basename
@@ -1338,6 +1340,9 @@ static void ui_set_model(ui *u, const char *path) {
         b += 10;                                        /* show the model id */
         n = strlen(b);
     } else if (strncmp(b, "openai:", 7) == 0) {
+        b += 7;
+        n = strlen(b);
+    } else if (strncmp(b, "gemini:", 7) == 0) {
         b += 7;
         n = strlen(b);
     } else {

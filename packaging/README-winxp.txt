@@ -32,6 +32,11 @@ BIGGER BRAINS: REMOTE INFERENCE AND HOSTED APIS
       NOTE: api.anthropic.com needs TLS 1.2 - stock XP SP3 cannot reach it
       (POSReady-patched systems may). The LAN option above always works.
 
+  gemini:gemini-flash-latest
+      The Google Gemini API - a FREE key from aistudio.google.com/apikey works
+      (use the -latest model aliases; the pro models have little or no free
+      quota). Same XP TLS note as above.
+
   openai:MODEL_NAME
       Any OpenAI-compatible /v1/chat/completions endpoint. Point ANACHRON_API_URL
       (or "api_url" in agent.json) at a LAN server (llama-server, LM Studio,

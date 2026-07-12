@@ -84,12 +84,15 @@ static void put_history(strbuf *b, const history *h) {
     }
 }
 
-/* Surface an API error body ({"error":{"message":...}} on both APIs) readably. */
+/* Surface an API error body readably: {"error":{"message":...}} on both APIs;
+ * Google's compat layer wraps the same shape in a one-element array. */
 static void print_api_error(const char *who, int status, const char *resp) {
     const char *msg = NULL;
     json_value *jv = resp ? json_parse(resp, NULL) : NULL;
     if (jv) {
-        const json_value *e = json_obj_get(jv, "error");
+        const json_value *root = jv;
+        if (root->type == JSON_ARRAY && root->count > 0) root = root->items[0];
+        const json_value *e = json_obj_get(root, "error");
         if (e) msg = json_as_str(json_obj_get(e, "message"));
     }
     fprintf(stderr, "%s: HTTP %d%s%.300s\n", who, status,
@@ -244,11 +247,23 @@ int api_backend_open(const char *spec, int n_ctx, infer_backend *out) {
     (void)n_ctx;   /* hosted contexts dwarf ours; history is budgeted by the agent */
     enum api_kind kind;
     const char *model;
-    if (strncmp(spec, "anthropic:", 10) == 0) { kind = API_ANTHROPIC; model = spec + 10; }
-    else if (strncmp(spec, "openai:", 7) == 0) { kind = API_OPENAI; model = spec + 7; }
-    else return -1;
+    const char *label;
+    const char *default_base;
+    if (strncmp(spec, "anthropic:", 10) == 0) {
+        kind = API_ANTHROPIC; model = spec + 10; label = "anthropic";
+        default_base = "https://api.anthropic.com";
+    } else if (strncmp(spec, "openai:", 7) == 0) {
+        kind = API_OPENAI; model = spec + 7; label = "openai";
+        default_base = "https://api.openai.com";
+    } else if (strncmp(spec, "gemini:", 7) == 0) {
+        /* Google's Gemini API speaks the OpenAI chat shape on its compat layer;
+         * the base already carries a path, so only the leaf gets appended below. */
+        kind = API_OPENAI; model = spec + 7; label = "gemini";
+        default_base = "https://generativelanguage.googleapis.com/v1beta/openai";
+    } else return -1;
     if (!*model) {
-        fprintf(stderr, "infer_api: no model named (e.g. anthropic:claude-opus-4-8)\n");
+        fprintf(stderr, "infer_api: no model named (e.g. %s:%s)\n", label,
+                kind == API_ANTHROPIC ? "claude-opus-4-8" : "gemini-2.5-pro");
         return -1;
     }
 
@@ -258,14 +273,27 @@ int api_backend_open(const char *spec, int n_ctx, infer_backend *out) {
     c->model = xstrdup(model);
 
     const char *base = getenv("ANACHRON_API_URL");
-    if (!base || !*base)
-        base = (kind == API_ANTHROPIC) ? "https://api.anthropic.com"
-                                       : "https://api.openai.com";
+    if (!base || !*base) base = default_base;
     size_t blen = strlen(base);
     while (blen > 0 && base[blen - 1] == '/') blen--;
+    /* Endpoint resolution: a bare scheme://host[:port] gets the API's canonical
+     * /v1/... path; a base that already carries a path (Google's compat layer,
+     * reverse proxies) gets only the endpoint leaf; a base that already IS the
+     * full endpoint is used as-is. */
+    const char *leaf      = (kind == API_ANTHROPIC) ? "/messages" : "/chat/completions";
+    const char *leaf_full = (kind == API_ANTHROPIC) ? "/v1/messages" : "/v1/chat/completions";
+    size_t llen = strlen(leaf);
+    const char *scheme_end = strstr(base, "://");
+    const char *first_slash = scheme_end ? strchr(scheme_end + 3, '/') : NULL;
+    int has_path = first_slash && (size_t)(first_slash - base) < blen;
     strbuf u; sb_init(&u);
     sb_append_n(&u, base, blen);
-    sb_append(&u, kind == API_ANTHROPIC ? "/v1/messages" : "/v1/chat/completions");
+    if (blen >= llen && strncmp(base + blen - llen, leaf, llen) == 0)
+        ;                                   /* already the full endpoint */
+    else if (has_path)
+        sb_append(&u, leaf);
+    else
+        sb_append(&u, leaf_full);
     c->url = xstrdup(sb_cstr(&u));
     sb_free(&u);
 
@@ -276,6 +304,12 @@ int api_backend_open(const char *spec, int n_ctx, infer_backend *out) {
             if (*p != '\r' && *p != '\n') sb_putc(&k, *p);
         c->api_key = xstrdup(sb_cstr(&k));
         sb_free(&k);
+    }
+    if (!c->api_key && strncmp(spec, "gemini:", 7) == 0) {
+        fprintf(stderr, "infer_api: gemini needs ANACHRON_API_KEY "
+                        "(a free key from aistudio.google.com/apikey)\n");
+        free(c->model); free(c->url); free(c);
+        return -1;
     }
     if (kind == API_ANTHROPIC && !c->api_key) {
         fprintf(stderr, "infer_api: anthropic needs ANACHRON_API_KEY "
@@ -289,8 +323,7 @@ int api_backend_open(const char *spec, int n_ctx, infer_backend *out) {
         c->max_tokens = (e && atoi(e) > 0) ? atoi(e) : 8192;
     }
 
-    fprintf(stderr, "infer_api: %s -> %s (model %s)\n",
-            kind == API_ANTHROPIC ? "anthropic" : "openai", c->url, c->model);
+    fprintf(stderr, "infer_api: %s -> %s (model %s)\n", label, c->url, c->model);
 
     out->impl = c;
     out->generate = api_generate;

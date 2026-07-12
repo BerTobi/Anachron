@@ -7,6 +7,25 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-03
+
+### Added
+- **`gemini:<model>` backend** — the Google Gemini API through its OpenAI-compatible
+  layer (`.../v1beta/openai/chat/completions`). A **free** key from
+  aistudio.google.com/apikey works; use the `-latest` aliases
+  (`gemini:gemini-flash-latest`) — the pro models carry little or no free-tier
+  quota, and the older dated models are closed to new projects. Validated live:
+  a full agent turn (write fizzbuzz.c → gcc compile → run → verify → final) on
+  `gemini-flash-latest` through the unchanged `<tool_call>` protocol and gate.
+
+### Fixed
+- API endpoint resolution: a base URL that already carries a path (Google's
+  compat layer, reverse proxies) now gets only the endpoint leaf appended
+  (`/chat/completions`), a bare host gets the canonical `/v1/...` path, and a
+  base that already IS the full endpoint is used as-is.
+- API error bodies wrapped in a JSON array (Google's style) now surface their
+  message instead of raw JSON.
+
 ## [0.7.0] - 2026-07-03
 
 The local 0.5B stops being the ceiling: one binary now carries three backend
@@ -508,7 +527,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/BerTobi/Anachron/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/BerTobi/Anachron/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/BerTobi/Anachron/compare/v0.5.5...v0.6.0
 [0.5.5]: https://github.com/BerTobi/Anachron/compare/v0.5.4...v0.5.5

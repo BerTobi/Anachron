@@ -41,6 +41,15 @@ echo "$OUT" | grep -q 'Wrote net.txt over the wire' || { echo "FAIL(anthropic): 
 grep -q 'hello from the network backend' "$TMP/sb/net.txt" || { echo "FAIL(anthropic): no file"; exit 1; }
 echo "ok: anthropic backend"
 
+# 4) gemini alias: a base URL that carries a path must get only the endpoint
+#    leaf appended (Google's /v1beta/openai compat layer shape)
+rm -f "$TMP/sb/net.txt"
+OUT=$(ANACHRON_API_URL="http://127.0.0.1:$PORT/v1beta/openai" ANACHRON_API_KEY="g-test" \
+      ./anachron --model "gemini:gemini-2.5-pro" --sandbox "$TMP/sb" --yolo "write net.txt" 2>&1)
+echo "$OUT" | grep -q 'Wrote net.txt over the wire' || { echo "FAIL(gemini): $OUT"; exit 1; }
+grep -q 'hello from the network backend' "$TMP/sb/net.txt" || { echo "FAIL(gemini): no file"; exit 1; }
+echo "ok: gemini alias (path-carrying base URL)"
+
 # Wire assertions from the server's request log
 python3 - "$TMP/requests.log" <<'EOF'
 import json, sys
