@@ -55,6 +55,10 @@ typedef struct {
     void (*on_message)(const char *text, void *ud);         /* plain conversational reply; turn ends */
     void (*on_final)(const char *message, void *ud);        /* explicit `final` tool; turn ends */
     void (*on_notice)(const char *text, void *ud);          /* e.g. re-prompt / cap hit */
+    /* nullable: brackets an in-process sub-agent's activity so the UI can set
+     * its tool calls apart (the child's own hooks still fire in between). */
+    void (*on_child_start)(void *ud);
+    void (*on_child_end)(void *ud);
 } agent_config;
 
 /* A conversation. The history persists across user turns, so the agent

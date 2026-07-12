@@ -541,7 +541,9 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
             ccfg.report_sink = &report;     /* ...only its captured report */
             agent_session child;
             agent_session_init(&child, &ccfg);
+            if (cfg->on_child_start) cfg->on_child_start(cfg->ud);
             int crc = agent_session_run_turn(&child, call.task ? call.task : "");
+            if (cfg->on_child_end) cfg->on_child_end(cfg->ud);
             s->turn_completion_tokens += child.turn_completion_tokens;
             strbuf obs2; sb_init(&obs2);
             if (report.len > 0)

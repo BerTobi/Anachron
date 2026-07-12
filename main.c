@@ -50,14 +50,14 @@
  * This is what finally gives colour on real XP, where raw escapes render as garbage. */
 typedef enum {
     CR_DEFAULT = 0, CR_ACCENT, CR_TITLE, CR_PROMPT, CR_TOOL, CR_OK, CR_ADD,
-    CR_ERR, CR_REMOVE, CR_WARN, CR_MUTED, CR_FINAL, CR_USER, CR_COUNT
+    CR_ERR, CR_REMOVE, CR_WARN, CR_MUTED, CR_FINAL, CR_USER, CR_CODE, CR_COUNT
 } ui_role;
 
 /* ANSI index per role: 0-7 normal, 8-15 bright (8 = grey). -1 inherits the terminal. */
 static const int ROLE_ANSI[CR_COUNT] = {
     /*CR_DEFAULT*/ -1, /*CR_ACCENT*/ 11, /*CR_TITLE*/ 14, /*CR_PROMPT*/ 10,
     /*CR_TOOL*/ 6, /*CR_OK*/ 10, /*CR_ADD*/ 10, /*CR_ERR*/ 9, /*CR_REMOVE*/ 9,
-    /*CR_WARN*/ 3, /*CR_MUTED*/ 8, /*CR_FINAL*/ 13, /*CR_USER*/ 12,
+    /*CR_WARN*/ 3, /*CR_MUTED*/ 8, /*CR_FINAL*/ 13, /*CR_USER*/ 12, /*CR_CODE*/ 14,
 };
 
 /* Streaming-render states (see ui_token). The raw model token stream is turned into
@@ -86,11 +86,29 @@ typedef struct {
     int  sr_flush;       /* emitted whitespace: flush at the end of this piece (word pacing) */
     int  sr_tag_n;       /* PLAIN: chars currently matching a "<tool_call>" prefix (held back) */
     int  turn_labeled;   /* printed the once-per-turn "anachron" gutter label */
+    int  nest;           /* rendering a sub-agent's activity: gutter-bar its lines */
+    /* Markdown-lite state for streamed plain replies (bold / inline code /
+     * fenced blocks / headings / bullets). Reset per generation. */
+    int  md_star;        /* pending '*' (waiting to see if it doubles into bold) */
+    int  md_star_bol;    /* ...and it sat at line start (candidate "* " bullet) */
+    int  md_bold;        /* inside **bold** */
+    int  md_ticks;       /* run of consecutive '`' being counted */
+    int  md_code;        /* inside `inline code` */
+    int  md_fence;       /* inside a ``` fenced block (whole lines styled as code) */
+    int  md_skipline;    /* swallowing the rest of a fence marker line */
+    int  md_head;        /* styling a "# heading" line */
+    int  md_dash;        /* line-start '-' held back (bullet vs plain dash) */
     char model_name[96]; /* model display name (basename, no .gguf) for the status band */
     char model_spec[192];/* the full spec as given (path/URL/provider:model) — /model
                             uses it to know whose catalog to list */
     int  ctx_total;      /* context window size, for the band's ctx % */
 } ui;
+
+/* Transcript glyphs, with plain-ASCII stand-ins for the XP raster console. */
+static const char *g_dot(const ui *u)    { return u->unicode ? "\xe2\x97\x8f" : "*"; }  /* ● */
+static const char *g_elbow(const ui *u)  { return u->unicode ? "\xe2\x8e\xbf" : "+-"; } /* ⎿ */
+static const char *g_bar(const ui *u)    { return u->unicode ? "\xe2\x94\x82" : "|"; }  /* │ */
+static const char *g_bullet(const ui *u) { return u->unicode ? "\xe2\x80\xa2" : "-"; }  /* • */
 
 #define SR_INDENT "  "
 
@@ -163,6 +181,24 @@ static void ui_reset(ui *u) {
     if (u->win) { fflush(u->out); SetConsoleTextAttribute((HANDLE)u->hcon, u->attr0); }
 #else
     fputs("\x1b[0m", u->out);
+#endif
+}
+
+/* Bold on/off, orthogonal to the colour roles: SGR 1/22 on POSIX, the
+ * FOREGROUND_INTENSITY bit on the XP console. */
+static void ui_bold(ui *u, int on) {
+    if (!u->color) return;
+#ifdef _WIN32
+    if (u->win) {
+        fflush(u->out);
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        if (GetConsoleScreenBufferInfo((HANDLE)u->hcon, &csbi))
+            SetConsoleTextAttribute((HANDLE)u->hcon,
+                on ? (csbi.wAttributes | FOREGROUND_INTENSITY)
+                   : (WORD)(csbi.wAttributes & ~FOREGROUND_INTENSITY));
+    }
+#else
+    fputs(on ? "\x1b[1m" : "\x1b[22m", u->out);
 #endif
 }
 
@@ -253,6 +289,118 @@ static void sr_emit(ui *u, char c) {
     if (c == ' ' || c == '\n' || c == '\t') u->sr_flush = 1;
 }
 
+/* Markdown-lite for streamed PLAIN replies (never for file content): **bold**,
+ * `inline code`, ``` fenced blocks (the fence lines vanish, the block renders
+ * in the code colour), "# headings", and "- " bullets. Single-pass with at
+ * most one held-back character, so it streams. Frontier models answer in
+ * markdown whether asked to or not — render it instead of showing the syntax. */
+static void md_reset(ui *u) {
+    if (u->md_bold) ui_bold(u, 0);
+    if (u->md_code || u->md_fence || u->md_head) ui_reset(u);
+    u->md_star = 0; u->md_star_bol = 0; u->md_bold = 0; u->md_ticks = 0;
+    u->md_code = 0; u->md_fence = 0; u->md_skipline = 0; u->md_head = 0;
+    u->md_dash = 0;
+}
+
+static void md_emit(ui *u, char c) {
+    /* Fence-marker lines are swallowed whole. */
+    if (u->md_skipline) {
+        if (c == '\n') { u->md_skipline = 0; sr_emit(u, '\n'); }
+        return;
+    }
+    /* Inside a fenced block: everything passes through in the code colour;
+     * only a line-start ``` closes it. */
+    if (u->md_fence) {
+        if (u->sr_bol && c == '`') {
+            if (++u->md_ticks == 3) {
+                u->md_ticks = 0; u->md_fence = 0; u->md_skipline = 1;
+                ui_reset(u);
+            }
+            return;
+        }
+        if (u->md_ticks) {   /* fewer than 3 backticks: they were literal */
+            if (!u->sr_bol) { /* unreachable: ticks only counted at bol here */ }
+            for (int t = 0; t < u->md_ticks; t++) { ui_style(u, CR_CODE); sr_emit(u, '`'); }
+            u->md_ticks = 0;
+        }
+        ui_style(u, CR_CODE);
+        sr_emit(u, c);
+        if (c == '\n') ui_reset(u);
+        return;
+    }
+
+    /* Backtick runs: 3 at line start opens a fence; otherwise toggle inline code. */
+    if (c == '`') {
+        u->md_ticks++;
+        if (u->md_ticks == 3 && u->sr_bol) {
+            u->md_ticks = 0; u->md_fence = 1; u->md_skipline = 1;
+        }
+        return;
+    }
+    if (u->md_ticks) {
+        u->md_code = !u->md_code;   /* 1-2 ticks: enter/leave inline code */
+        if (u->md_code) ui_style(u, CR_CODE); else ui_reset(u);
+        u->md_ticks = 0;
+    }
+
+    /* Held line-start '-': "- " becomes a coloured bullet, anything else was a
+     * plain dash. */
+    if (u->md_dash) {
+        u->md_dash = 0;
+        if (c == ' ') {
+            ui_style(u, CR_ACCENT);
+            const char *b = g_bullet(u);
+            while (*b) sr_emit(u, *b++);
+            ui_reset(u);
+            sr_emit(u, ' ');
+            return;
+        }
+        sr_emit(u, '-');
+        /* fall through to process c normally */
+    }
+
+    /* Pending '*': a second one toggles bold; at line start followed by a
+     * space it was a "* " bullet; anything else was literal. */
+    if (u->md_star) {
+        int was_bol = u->md_star_bol;
+        u->md_star = 0; u->md_star_bol = 0;
+        if (c == '*') {
+            u->md_bold = !u->md_bold;
+            ui_bold(u, u->md_bold);
+            return;
+        }
+        if (c == ' ' && was_bol) {
+            ui_style(u, CR_ACCENT);
+            const char *b = g_bullet(u);
+            while (*b) sr_emit(u, *b++);
+            ui_reset(u);
+            sr_emit(u, ' ');
+            return;
+        }
+        sr_emit(u, '*');
+    }
+    if (c == '*' && !u->md_code) { u->md_star = 1; u->md_star_bol = u->sr_bol; return; }
+
+    if (u->sr_bol) {
+        if (c == '#') {   /* heading: swallow the marker run, colour the line */
+            if (!u->md_head) { u->md_head = 1; ui_style(u, CR_TITLE); }
+            return;
+        }
+        if (u->md_head && c == ' ') return;   /* the space after the #'s */
+        if (c == '-' && !u->md_code) { u->md_dash = 1; return; }
+    }
+    if (c == '\n' && u->md_head) { u->md_head = 0; ui_reset(u); }
+    if (u->md_code && c == '\n') { ui_reset(u); sr_emit(u, '\n'); ui_style(u, CR_CODE); return; }
+    sr_emit(u, c);
+}
+
+/* Flush any held-back markdown state at end of message (dangling '*' or '-'). */
+static void md_finish(ui *u) {
+    if (u->md_star) sr_emit(u, '*');
+    if (u->md_dash) sr_emit(u, '-');
+    md_reset(u);
+}
+
 static int win_ends(const char *w, int n, const char *needle) {
     int nl = (int)strlen(needle);
     return n >= nl && memcmp(w + n - nl, needle, (size_t)nl) == 0;
@@ -263,9 +411,13 @@ static void ui_stream_reset(ui *u) {
     u->sr = SR_DECIDE; u->sr_acc_n = 0; u->sr_win_n = 0;
     u->sr_esc = 0; u->sr_bol = 1; u->sr_began = 0; u->sr_flush = 0;
     u->sr_tag_n = 0;
+    md_reset(u);
 }
 
 static void ui_iter_start(int iter, void *ud) { (void)iter; ui_stream_reset((ui *)ud); }
+
+static void ui_child_start(void *ud) { ((ui *)ud)->nest = 1; }
+static void ui_child_end(void *ud)   { ((ui *)ud)->nest = 0; }
 
 /* Debug log sink: append one line to the log file when --log/ANACHRON_LOG is set. */
 static void ui_log(const char *text, void *ud) {
@@ -292,7 +444,7 @@ static void ui_token(const char *piece, void *ud) {
                 u->sr = SR_TOOL;
             } else if (u->sr_acc_n >= (int)sizeof u->sr_acc - 1) {
                 u->sr = SR_PLAIN;                 /* no tool marker in 63 chars — plain text */
-                for (int i = 0; i < u->sr_acc_n; i++) sr_emit(u, u->sr_acc[i]);
+                for (int i = 0; i < u->sr_acc_n; i++) md_emit(u, u->sr_acc[i]);
             }
             break;
         case SR_PLAIN: {
@@ -308,10 +460,10 @@ static void ui_token(const char *piece, void *ud) {
                     u->sr = SR_AFTER;
                 }
             } else {
-                for (int t = 0; t < u->sr_tag_n; t++) sr_emit(u, TAG[t]);
+                for (int t = 0; t < u->sr_tag_n; t++) md_emit(u, TAG[t]);
                 u->sr_tag_n = 0;
                 if ((char)c == TAG[0]) u->sr_tag_n = 1;
-                else sr_emit(u, (char)c);
+                else md_emit(u, (char)c);
             }
             break;
         }
@@ -352,11 +504,36 @@ static void ui_message(const char *text, void *ud) {
     ui *u = ud;
     (void)text;
     if (u->sr == SR_DECIDE)
-        for (int i = 0; i < u->sr_acc_n; i++) sr_emit(u, u->sr_acc[i]);
+        for (int i = 0; i < u->sr_acc_n; i++) md_emit(u, u->sr_acc[i]);
     if (u->sr == SR_PLAIN && u->sr_tag_n) {   /* text genuinely ended mid-"<tool_call" */
         static const char TAG[] = "<tool_call>";
-        for (int t = 0; t < u->sr_tag_n; t++) sr_emit(u, TAG[t]);
+        for (int t = 0; t < u->sr_tag_n; t++) md_emit(u, TAG[t]);
         u->sr_tag_n = 0;
+    }
+    md_finish(u);
+    fputc('\n', u->out);
+    fflush(u->out);
+}
+
+/* The sub-agent gutter: its activity is set two spaces deeper behind a bar,
+ * so the parent's and child's actions are visually distinct. */
+static void nest_prefix(ui *u) {
+    if (!u->nest) return;
+    ui_style(u, CR_MUTED);
+    fprintf(u->out, "%s ", g_bar(u));
+    ui_reset(u);
+}
+
+/* One tool call = one card line:  ● Verb args  (dot + bold verb, muted args). */
+static void tool_card(ui *u, const char *verb, const char *args) {
+    block_start(u);
+    nest_prefix(u);
+    ui_span(u, CR_TOOL, g_dot(u));
+    fputc(' ', u->out);
+    ui_bold(u, 1); fputs(verb, u->out); ui_bold(u, 0);
+    if (args && *args) {
+        fputc(' ', u->out);
+        ui_span(u, CR_MUTED, args);
     }
     fputc('\n', u->out);
     fflush(u->out);
@@ -364,52 +541,53 @@ static void ui_message(const char *text, void *ud) {
 
 static void ui_tool_call(const tool_call *c, void *ud) {
     ui *u = ud;
+    char a[160];
     if (c->kind == TC_FINAL) return;   /* rendered by ui_final; don't emit a leading blank line */
-    block_start(u);
-    ui_style(u, CR_TOOL);
     switch (c->kind) {
-        case TC_READ_FILE:   fprintf(u->out, "> read_file(%s)", c->path); break;
-        case TC_WRITE_FILE:  fprintf(u->out, "> write_file(%s, %zu bytes)",
-                                     c->path, strlen(c->content ? c->content : "")); break;
-        case TC_LIST_DIR:    fprintf(u->out, "> list_dir(%s)", c->path); break;
-        case TC_RUN_COMMAND: fprintf(u->out, "> run_command(%s)", c->cmd); break;
-        case TC_EDIT:        fprintf(u->out, "> edit(%s)", c->path); break;
-        case TC_SEARCH:      fprintf(u->out, "> search(%s)", c->pattern ? c->pattern : ""); break;
-        case TC_GLOB:        fprintf(u->out, "> glob(%s)", c->pattern ? c->pattern : ""); break;
-        case TC_SCREENSHOT:  fprintf(u->out, "> screenshot(%s)", c->path ? c->path : ""); break;
-        case TC_FETCH:       fprintf(u->out, "> fetch(%s)", c->url ? c->url : ""); break;
+        case TC_READ_FILE:   tool_card(u, "Read", c->path); break;
+        case TC_WRITE_FILE:
+            snprintf(a, sizeof a, "%s (%zu bytes)", c->path,
+                     strlen(c->content ? c->content : ""));
+            tool_card(u, "Write", a);
+            break;
+        case TC_LIST_DIR:    tool_card(u, "List", c->path); break;
+        case TC_RUN_COMMAND: tool_card(u, "Run", c->cmd); break;
+        case TC_EDIT:        tool_card(u, "Edit", c->path); break;
+        case TC_SEARCH:      tool_card(u, "Search", c->pattern ? c->pattern : ""); break;
+        case TC_GLOB:        tool_card(u, "Glob", c->pattern ? c->pattern : ""); break;
+        case TC_SCREENSHOT:  tool_card(u, "Screenshot", c->path ? c->path : ""); break;
+        case TC_FETCH:       tool_card(u, "Fetch", c->url ? c->url : ""); break;
         case TC_AGENT:
             if (c->ntasks > 0) {
-                fprintf(u->out, "> agent(%lu tasks in parallel)", (unsigned long)c->ntasks);
-                ui_reset(u);
+                snprintf(a, sizeof a, "%lu tasks in parallel", (unsigned long)c->ntasks);
+                tool_card(u, "Agents", a);
                 for (size_t k = 0; k < c->ntasks; k++) {
                     ui_style(u, CR_MUTED);
-                    fprintf(u->out, "\n    %lu. %.70s%s", (unsigned long)(k + 1),
+                    fprintf(u->out, "    %lu. %.70s%s\n", (unsigned long)(k + 1),
                             c->tasks[k], strlen(c->tasks[k]) > 70 ? "..." : "");
+                    ui_reset(u);
                 }
+                fflush(u->out);
             } else {
-                fprintf(u->out, "> agent(%.60s%s)", c->task ? c->task : "",
-                        c->task && strlen(c->task) > 60 ? "..." : "");
+                snprintf(a, sizeof a, "%.100s%s", c->task ? c->task : "",
+                         c->task && strlen(c->task) > 100 ? "..." : "");
+                tool_card(u, "Agent", a);
             }
             break;
-        case TC_PLAN:        fputs("> plan:", u->out); ui_reset(u);
-                             fprintf(u->out, "\n%s\n", c->plan ? c->plan : "");
-                             fflush(u->out); return;
-        default:             ui_reset(u); fflush(u->out); return; /* final handled by ui_final */
+        case TC_PLAN:
+            tool_card(u, "Plan", NULL);
+            fprintf(u->out, "%s\n", c->plan ? c->plan : "");
+            fflush(u->out);
+            break;
+        default: break;   /* final handled by ui_final */
     }
-    ui_reset(u);
-    fputc('\n', u->out);
-    fflush(u->out);
 }
 
-/* Print an observation indented, truncated to a sane number of lines so a long
- * file dump doesn't bury the transcript (the model still got the full text). */
+/* Tool observation: an elbow-connected block under the call's card, truncated
+ * to a sane number of lines so a long file dump doesn't bury the transcript
+ * (the model still got the full text). The first line rides the elbow. */
 static void ui_tool_result(const char *obs, int ok, void *ud) {
     ui *u = ud;
-    if (ok) { ui_style(u, CR_MUTED); fputs("  result:", u->out); }
-    else    { ui_style(u, CR_ERR);   fputs("  result (error):", u->out); }
-    ui_reset(u);
-    fputc('\n', u->out);
     const char *p = obs;
     int line = 0;
     while (*p) {
@@ -418,38 +596,58 @@ static void ui_tool_result(const char *obs, int ok, void *ud) {
         if (line >= DISPLAY_MAX_LINES) {
             int remaining = 1;
             for (const char *q = p; (q = strchr(q, '\n')) != NULL; q++) remaining++;
-            fprintf(u->out, "    ... (%d more line%s)\n", remaining, remaining == 1 ? "" : "s");
+            nest_prefix(u);
+            ui_style(u, CR_MUTED);
+            fprintf(u->out, "     ... (+%d line%s)\n", remaining, remaining == 1 ? "" : "s");
+            ui_reset(u);
             break;
         }
-        fprintf(u->out, "    %.*s\n", (int)len, p);
+        nest_prefix(u);
+        if (line == 0) {
+            fputs("  ", u->out);
+            ui_span(u, ok ? CR_MUTED : CR_ERR, g_elbow(u));
+            fputc(' ', u->out);
+        } else {
+            fputs("     ", u->out);
+        }
+        if (!ok) ui_style(u, CR_ERR);
+        else if (line > 0) ui_style(u, CR_MUTED);
+        fprintf(u->out, "%.*s", (int)len, p);
+        ui_reset(u);
+        fputc('\n', u->out);
         line++;
         if (!nl) break;
         p = nl + 1;
     }
+    if (line == 0) {   /* empty observation still gets its elbow */
+        nest_prefix(u);
+        fputs("  ", u->out);
+        ui_span(u, ok ? CR_MUTED : CR_ERR, g_elbow(u));
+        fputs(" (no output)\n", u->out);
+    }
     fflush(u->out);
 }
 
-/* The turn's answer. With the gutter label there is no "== final ==" banner any
- * more: the reply is simply the last block of the anachron turn, indented like
- * streamed text, with the status band closing the turn right after. */
+/* The turn's answer: the last block of the anachron turn, markdown-rendered
+ * like streamed text, with the status band closing the turn right after. */
 static void ui_final(const char *message, void *ud) {
     ui *u = ud;
     block_start(u);
-    const char *p = message;
-    while (*p) {
-        const char *nl = strchr(p, '\n');
-        size_t len = nl ? (size_t)(nl - p) : strlen(p);
-        fprintf(u->out, SR_INDENT "%.*s\n", (int)len, p);
-        if (!nl) break;
-        p = nl + 1;
-    }
+    u->sr_began = 1;   /* block already opened: don't let sr_emit reopen it */
+    u->sr_bol = 1;
+    md_reset(u);
+    for (const char *p = message; *p; p++) md_emit(u, *p);
+    md_finish(u);
+    if (!u->sr_bol) fputc('\n', u->out);
     fflush(u->out);
 }
 
 static void ui_notice(const char *text, void *ud) {
     ui *u = ud;
     fputc('\n', u->out);
-    ui_style(u, CR_WARN); fprintf(u->out, "[notice] %s", text); ui_reset(u);
+    ui_style(u, CR_WARN);
+    fprintf(u->out, "%s %s", u->unicode ? "\xe2\x9a\xa0" : "!", text);   /* ⚠ */
+    ui_reset(u);
     fputc('\n', u->out);
     fflush(u->out);
 }
@@ -507,7 +705,15 @@ static void fmt_dur(char *buf, size_t n, double secs) {
  * budget on hosted/remote backends); it turns amber at 80% and earns a hint at
  * 90%, because a 4096-token window fills sooner than it feels. Middle-dot
  * separators on a terminal that renders them, ASCII pipes on the XP console. */
-static void print_turn_stats(ui *u, double secs, const agent_session *s) {
+/* Compact token count: 612 / 1.2k / 43k. */
+static void fmt_tok(char *dst, size_t n, long t) {
+    if (t < 1000)        snprintf(dst, n, "%ld", t);
+    else if (t < 10000)  snprintf(dst, n, "%.1fk", (double)t / 1000.0);
+    else                 snprintf(dst, n, "%ldk", t / 1000);
+}
+
+static void print_turn_stats(ui *u, double secs, const agent_session *s,
+                             long session_tok, int session_turns) {
     int fancy = u->color && u->unicode;
     const char *sep  = fancy ? " \xc2\xb7 " : " | ";          /* " · " */
     const char *dash = fancy ? "\xe2\x94\x80\xe2\x94\x80" : "--"; /* "──" */
@@ -527,8 +733,14 @@ static void print_turn_stats(ui *u, double secs, const agent_session *s) {
         fprintf(u->out, "%d%%", pct);
         if (pct >= 80) ui_style(u, CR_MUTED);
     }
-    if (s->turn_completion_tokens > 0)
+    if (s->turn_completion_tokens > 0) {
         fprintf(u->out, "%s%d tok", sep, s->turn_completion_tokens);
+        if (session_turns > 1 && session_tok > s->turn_completion_tokens) {
+            char tot[48];
+            fmt_tok(tot, sizeof tot, session_tok);
+            fprintf(u->out, " (%s session)", tot);
+        }
+    }
     fprintf(u->out, "%s%s", sep, dur);
     ui_reset(u);
     fputc('\n', u->out);
@@ -2301,6 +2513,8 @@ int main(int argc, char **argv) {
     cfg.on_message = ui_message;
     cfg.on_final = ui_final;
     cfg.on_notice = ui_notice;
+    cfg.on_child_start = ui_child_start;   /* gutter-bar a sub-agent's activity */
+    cfg.on_child_end = ui_child_end;
     if (print_mode) {   /* Unix filter: only the answer reaches stdout */
         cfg.on_iter_start = NULL;
         cfg.on_token = NULL;
@@ -2338,7 +2552,10 @@ int main(int argc, char **argv) {
         interrupt_clear();
         u.turn_labeled = 0;
         rc = agent_session_run_turn(&session, msg);
-        if (!print_mode) print_turn_stats(&u, plat_time_sec() - t0, &session);
+        double one_elapsed = plat_time_sec() - t0;
+        stats_record(&stats, &session, one_elapsed);
+        if (!print_mode)
+            print_turn_stats(&u, one_elapsed, &session, stats.gen_tokens, stats.turns);
         /* Spawned sub-agents share the sandbox: they must not clobber the
          * conversation the user will want to --continue. */
         if (depth == 0) session_autosave(sandbox, &session);
@@ -2360,18 +2577,26 @@ int main(int argc, char **argv) {
             fflush(stdout);
         }
 #endif
-        ui_style(&u, CR_TITLE);
-        fputs("ANACHRON " ANACHRON_VERSION, stdout);
+        ui_style(&u, CR_ACCENT);
+        fputs("   _    _  _   _    ___ _  _ ___  ___  _  _\n"
+              "  /_\\  | \\| | /_\\  / __| || | _ \\/ _ \\| \\| |\n"
+              " / _ \\ | .` |/ _ \\| (__| __ |   / (_) | .` |\n"
+              "/_/ \\_\\|_|\\_/_/ \\_\\\\___|_||_|_|_\\\\___/|_|\\_|\n", stdout);
         ui_reset(&u);
-        fputs(" - local agentic coding harness\n", stdout);
-        banner_row(&u, "backend:", model ? model : "stub (no model)");
-        banner_row(&u, "sandbox:", sandbox);
-        banner_row(&u, "grammar:", grammar ? grammar_path : "(none)");
-        banner_row(&u, "verify :", !verify_writes ? "off"
+        ui_style(&u, CR_TITLE);
+        fputs("v" ANACHRON_VERSION, stdout);
+        ui_reset(&u);
+        ui_span(&u, CR_MUTED, "  the agent harness that still runs on Windows XP\n");
+        fputc('\n', stdout);
+        banner_row(&u, "model  ", model ? model : "stub (no model)");
+        banner_row(&u, "sandbox", sandbox);
+        banner_row(&u, "verify ", !verify_writes ? "off"
                    : (verify_cc ? "on (balance + cc syntax check)" : "on (balance check)"));
-        banner_row(&u, "context:", project_context ? "AGENTS.md loaded" : "(no AGENTS.md)");
-        banner_row(&u, "config :", cfg_path ? cfg_path : "(none)");
-        fputs("Type a task and press enter (use @path to attach a file). /help for commands.\n", stdout);
+        banner_row(&u, "context", project_context ? "AGENTS.md loaded" : "(no AGENTS.md)");
+        banner_row(&u, "config ", cfg_path ? cfg_path : "(none)");
+        if (grammar) banner_row(&u, "grammar", grammar_path);
+        fputc('\n', stdout);
+        ui_span(&u, CR_MUTED, "Type a task (use @path to attach a file) - /help for commands.\n");
         for (;;) {
             plat_flush_input();   /* drop scroll/keystroke bytes from the last turn */
             fputc('\n', stdout);
@@ -2419,7 +2644,7 @@ int main(int argc, char **argv) {
             plat_set_echo(1);
             double elapsed = plat_time_sec() - t0;
             stats_record(&stats, &session, elapsed);
-            print_turn_stats(&u, elapsed, &session);
+            print_turn_stats(&u, elapsed, &session, stats.gen_tokens, stats.turns);
             session_autosave(sandbox_live, &session);
             if (interrupt_pending()) { ui_style(&u, CR_WARN); fputs("(interrupted)", stdout); ui_reset(&u); fputc('\n', stdout); }
             interrupt_clear();

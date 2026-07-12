@@ -7,6 +7,30 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-07-12
+
+### Changed
+- **Transcript overhaul (polish P5)** — the UI catches up with the features:
+  - **Tool cards**: `● Write hello.c (209 bytes)` — a coloured dot, the verb
+    in bold, arguments muted — replacing `> write_file(...)`. Results hang off
+    an elbow connector (`⎿ Wrote 209 bytes...`), error results in red, still
+    capped at 10 lines.
+  - **Markdown-lite rendering of replies**: `**bold**`, `` `inline code` ``,
+    ``` fenced blocks (the fence lines vanish, the block renders in the code
+    colour), `#` headings, and `-`/`*` bullets (→ `•`) — rendered live while
+    streaming, single-pass with one held-back character. File content and
+    tool output stay raw. Frontier models answer in markdown whether asked or
+    not; now it reads as intended.
+  - **Sub-agent gutter**: an in-process child's tool calls render behind a
+    `│` bar, so parent and child actions are visually distinct.
+  - **ASCII wordmark** on the interactive banner (the article said it best:
+    you don't often get to do that kind of thing) plus a tidied config block.
+  - **Session-aware status band**: `59 tok (253 session)` once the
+    conversation has more than one turn.
+  - Notices show as `⚠ text` instead of `[notice] text`.
+  - Every glyph has a plain-ASCII stand-in on the XP raster console
+    (`*`, `+-`, `|`, `-`, `!`).
+
 ## [0.13.0] - 2026-07-12
 
 ### Added
