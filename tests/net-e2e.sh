@@ -59,6 +59,13 @@ echo "$OUT" | grep -q 'gemini:fake-lite' || { echo "FAIL(/model): catalog incomp
 echo "$OUT" | grep -q 'fake-embedding' && { echo "FAIL(/model): embedding model not filtered"; exit 1; }
 echo "ok: /model lists the API catalog (embeddings filtered)"
 
+# 5b) ...even when the CURRENT backend is local: with a base URL configured the
+#     picker falls back to the openai-compat catalog
+OUT=$(printf '/model\n\n/quit\n' | ANACHRON_API_URL="http://127.0.0.1:$PORT" \
+      ./anachron --sandbox "$TMP/sb" 2>&1)
+echo "$OUT" | grep -q 'openai:fake-big' || { echo "FAIL(/model fallback): catalog not listed from local backend"; exit 1; }
+echo "ok: /model catalog fallback while a local backend runs"
+
 # Wire assertions from the server's request log
 python3 - "$TMP/requests.log" <<'EOF'
 import json, sys

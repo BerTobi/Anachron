@@ -1307,6 +1307,12 @@ static int list_gguf(const char *dir, char ***out) {
     return n;
 }
 
+/* The model spec from the CONFIG FILE, kept even when the command line overrode
+ * the running model — so /model can still list "your" provider's catalog while a
+ * local model is active. */
+static char g_cfg_model[192];
+static int spec_networked(const char *m);
+
 /* Should this catalog id be offered as a chat model? Filters out the modality
  * variants (tts/image/audio/embedding/...) that can't drive the agent loop. */
 static int api_model_is_chat(const char *id) {
@@ -1325,20 +1331,35 @@ static int api_model_is_chat(const char *id) {
  * a picker that can't list is not an error). */
 static int list_api_models(const char *cur_spec, char ***out) {
     *out = NULL;
+    /* Whose catalog? The current backend if it's an API; else whatever the config
+     * file configured (the key is saved there — list that provider even while a
+     * local model runs); else, with a custom base URL, assume an OpenAI-compat
+     * server (llama-server / LM Studio) and list keyless. */
+    const char *src = NULL;
+    if (cur_spec && (strncmp(cur_spec, "gemini:", 7) == 0 ||
+                     strncmp(cur_spec, "openai:", 7) == 0 ||
+                     strncmp(cur_spec, "anthropic:", 10) == 0))
+        src = cur_spec;
+    else if (g_cfg_model[0] && (strncmp(g_cfg_model, "gemini:", 7) == 0 ||
+                                strncmp(g_cfg_model, "openai:", 7) == 0 ||
+                                strncmp(g_cfg_model, "anthropic:", 10) == 0))
+        src = g_cfg_model;
+    else if (getenv("ANACHRON_API_URL") && *getenv("ANACHRON_API_URL"))
+        src = "openai:";
+    else
+        return 0;
     const char *prefix, *default_base;
     int anthropic = 0;
-    if (cur_spec && strncmp(cur_spec, "gemini:", 7) == 0) {
+    if (strncmp(src, "gemini:", 7) == 0) {
         prefix = "gemini:";
         default_base = "https://generativelanguage.googleapis.com/v1beta/openai";
-    } else if (cur_spec && strncmp(cur_spec, "openai:", 7) == 0) {
-        prefix = "openai:";
-        default_base = "https://api.openai.com";
-    } else if (cur_spec && strncmp(cur_spec, "anthropic:", 10) == 0) {
+    } else if (strncmp(src, "anthropic:", 10) == 0) {
         prefix = "anthropic:";
         default_base = "https://api.anthropic.com";
         anthropic = 1;
     } else {
-        return 0;
+        prefix = "openai:";
+        default_base = "https://api.openai.com";
     }
     const char *base = getenv("ANACHRON_API_URL");
     if (!base || !*base) base = default_base;
@@ -1404,16 +1425,35 @@ static char *pick_model(const char *cur_spec) {
     const char *dir = model_dir();
     const char *where = strcmp(dir, ".") == 0 ? "this folder" : dir;
     char **v; int n = list_gguf(dir, &v);
+    /* Also scan the folder the RUNNING model came from (e.g. run.sh's model
+     * stash) — its siblings are the obvious local alternatives. */
+    char **v2 = NULL; int n2 = 0;
+    if (cur_spec && !spec_networked(cur_spec) && ends_gguf(cur_spec)) {
+        const char *sl = strrchr(cur_spec, '/');
+        if (sl && sl != cur_spec) {
+            char curdir[512];
+            size_t dl = (size_t)(sl - cur_spec);
+            if (dl < sizeof curdir) {
+                memcpy(curdir, cur_spec, dl);
+                curdir[dl] = '\0';
+                if (strcmp(curdir, dir) != 0) n2 = list_gguf(curdir, &v2);
+            }
+        }
+    }
     char **av; int an = list_api_models(cur_spec, &av);
     if (n > 0) {
         fprintf(stdout, "Models found in %s:\n", where);
         for (int i = 0; i < n; i++) fprintf(stdout, "  %d) %s\n", i + 1, v[i]);
     }
+    if (n2 > 0) {
+        fprintf(stdout, "Models beside the current one:\n");
+        for (int i = 0; i < n2; i++) fprintf(stdout, "  %d) %s\n", n + i + 1, v2[i]);
+    }
     if (an > 0) {
         fprintf(stdout, "Models your API key can use:\n");
-        for (int i = 0; i < an; i++) fprintf(stdout, "  %d) %s\n", n + i + 1, av[i]);
+        for (int i = 0; i < an; i++) fprintf(stdout, "  %d) %s\n", n + n2 + i + 1, av[i]);
     }
-    if (n > 0 || an > 0) {
+    if (n > 0 || n2 > 0 || an > 0) {
         fputs("Choose a number, or type a .gguf path / http://server:port / "
               "anthropic:<model> / gemini:<model> / openai:<model>: ", stdout);
     } else {
@@ -1428,13 +1468,16 @@ static char *pick_model(const char *cur_spec) {
         chomp(buf);
         if (buf[0]) {
             char *end; long k = strtol(buf, &end, 10);
-            if (*end == '\0' && k >= 1 && k <= n)                pick = xstrdup(v[k - 1]);
-            else if (*end == '\0' && k > n && k <= n + an)       pick = xstrdup(av[k - n - 1]);
-            else                                                 pick = xstrdup(buf);
+            if (*end == '\0' && k >= 1 && k <= n)                     pick = xstrdup(v[k - 1]);
+            else if (*end == '\0' && k > n && k <= n + n2)            pick = xstrdup(v2[k - n - 1]);
+            else if (*end == '\0' && k > n + n2 && k <= n + n2 + an)  pick = xstrdup(av[k - n - n2 - 1]);
+            else                                                      pick = xstrdup(buf);
         }
     }
     for (int i = 0; i < n; i++) free(v[i]);
     free(v);
+    for (int i = 0; i < n2; i++) free(v2[i]);
+    free(v2);
     for (int i = 0; i < an; i++) free(av[i]);
     free(av);
     return pick;
@@ -1853,8 +1896,12 @@ int main(int argc, char **argv) {
          *owned_grammar = NULL, *owned_log = NULL;
     if (conf) {
         const char *s;
-        if ((s = json_as_str(json_obj_get(conf, "model"))))
+        if ((s = json_as_str(json_obj_get(conf, "model")))) {
             model = owned_model = xstrdup(s);
+            /* remembered separately: /model lists this provider's catalog even
+             * when a CLI flag runs a local model instead */
+            snprintf(g_cfg_model, sizeof g_cfg_model, "%s", s);
+        }
         if ((s = json_as_str(json_obj_get(conf, "sandbox"))))
             sandbox = owned_sandbox = xstrdup(s);
         if ((s = json_as_str(json_obj_get(conf, "grammar"))))

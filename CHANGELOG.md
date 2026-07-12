@@ -7,6 +7,19 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-07-12
+
+### Fixed
+- **`/model` lists the API catalog even while a local model is running.** The
+  provider to ask is now inferred in order: the current backend if it's an API
+  spec → the config file's model (your key is saved there) → a configured
+  `ANACHRON_API_URL` (assumed OpenAI-compatible, keyless LAN servers included).
+  Previously the catalog only appeared when the session was already on an API
+  backend — exactly the moment you least needed the list.
+- The picker also scans the folder the RUNNING `.gguf` came from ("Models
+  beside the current one"), so launching via a script that keeps models in its
+  own stash still lists the local alternatives.
+
 ## [0.8.1] - 2026-07-12
 
 ### Added
@@ -572,7 +585,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/BerTobi/Anachron/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/BerTobi/Anachron/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/BerTobi/Anachron/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/BerTobi/Anachron/compare/v0.7.0...v0.7.1
