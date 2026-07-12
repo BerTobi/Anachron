@@ -7,6 +7,17 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-07-12
+
+### Changed
+- **New files stream as green diffs with line numbers.** The code a
+  `write_file` is about to save — shown live ahead of the `[y/N]` gate — now
+  renders with a diff gutter (muted line number, green `+`, green text)
+  instead of as a wall of plain text. What you approve reads as the change it
+  is. Edits of existing files keep their +/- diff. Syntax highlighting was
+  considered and deliberately left out: a language tokenizer inside the
+  char-at-a-time streamer buys little over the diff colouring at real cost.
+
 ## [0.14.0] - 2026-07-12
 
 ### Changed

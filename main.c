@@ -85,6 +85,7 @@ typedef struct {
     int  sr_began;       /* emitted anything this generation (drives the leading blank line) */
     int  sr_flush;       /* emitted whitespace: flush at the end of this piece (word pacing) */
     int  sr_tag_n;       /* PLAIN: chars currently matching a "<tool_call>" prefix (held back) */
+    int  sr_line;        /* CONTENT: 1-based line number for the new-file diff gutter */
     int  turn_labeled;   /* printed the once-per-turn "anachron" gutter label */
     int  nest;           /* rendering a sub-agent's activity: gutter-bar its lines */
     /* Markdown-lite state for streamed plain replies (bold / inline code /
@@ -280,10 +281,25 @@ static int ui_confirm(const tool_call *c, void *ud) {
 }
 
 /* Emit one already-decoded output char, indenting at the start of each line and
- * printing a leading blank line before the model's first output of the turn. */
+ * printing a leading blank line before the model's first output of the turn.
+ * In SR_CONTENT (a write_file's content streaming ahead of the gate) each line
+ * opens with a diff gutter — muted line number, green '+', green text — so a
+ * new file reads as the change it is, not a wall of plain text. */
 static void sr_emit(ui *u, char c) {
     if (!u->sr_began) { block_start(u); u->sr_began = 1; }
-    if (u->sr_bol && c != '\n') { fputs(SR_INDENT, u->out); u->sr_bol = 0; }
+    int content = (u->sr == SR_CONTENT);
+    if (u->sr_bol && (c != '\n' || content)) {
+        if (content) {
+            ui_style(u, CR_MUTED);
+            fprintf(u->out, "%4d ", u->sr_line);
+            ui_style(u, CR_ADD);
+            fputs("+ ", u->out);
+        } else {
+            fputs(SR_INDENT, u->out);
+        }
+        u->sr_bol = 0;
+    }
+    if (content && c == '\n') { ui_reset(u); u->sr_line++; }
     fputc(c, u->out);
     u->sr_bol = (c == '\n');
     if (c == ' ' || c == '\n' || c == '\t') u->sr_flush = 1;
@@ -476,7 +492,10 @@ static void ui_token(const char *piece, void *ud) {
             break;
         }
         case SR_VALWAIT:
-            if (c == '"') u->sr = SR_CONTENT;     /* opening quote of the value */
+            if (c == '"') {                       /* opening quote of the value */
+                u->sr = SR_CONTENT;
+                u->sr_line = 1;
+            }
             break;
         case SR_CONTENT:
             if (u->sr_esc) {
@@ -484,7 +503,7 @@ static void ui_token(const char *piece, void *ud) {
                 sr_emit(u, e);
                 u->sr_esc = 0;
             } else if (c == '\\') { u->sr_esc = 1; }
-            else if (c == '"') { u->sr = SR_AFTER; }   /* end of the value */
+            else if (c == '"') { ui_reset(u); u->sr = SR_AFTER; }   /* end of the value */
             else sr_emit(u, (char)c);
             break;
         case SR_AFTER:
