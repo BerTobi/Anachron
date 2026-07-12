@@ -374,6 +374,8 @@ static void ui_tool_call(const tool_call *c, void *ud) {
         case TC_GLOB:        fprintf(u->out, "> glob(%s)", c->pattern ? c->pattern : ""); break;
         case TC_SCREENSHOT:  fprintf(u->out, "> screenshot(%s)", c->path ? c->path : ""); break;
         case TC_FETCH:       fprintf(u->out, "> fetch(%s)", c->url ? c->url : ""); break;
+        case TC_AGENT:       fprintf(u->out, "> agent(%.60s%s)", c->task ? c->task : "",
+                                     c->task && strlen(c->task) > 60 ? "..." : ""); break;
         case TC_PLAN:        fputs("> plan:", u->out); ui_reset(u);
                              fprintf(u->out, "\n%s\n", c->plan ? c->plan : "");
                              fflush(u->out); return;

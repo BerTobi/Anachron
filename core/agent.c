@@ -329,6 +329,7 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
             }
             /* Plain conversational reply. */
             if (cfg->on_message) cfg->on_message(out, cfg->ud);
+            if (cfg->report_sink) sb_append(cfg->report_sink, out);
             toolcall_free(&call);
             sb_free(&acc);
             finished = 1;
@@ -339,6 +340,7 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
         if (call.kind == TC_FINAL) {
             if (cfg->on_tool_call) cfg->on_tool_call(&call, cfg->ud);
             if (cfg->on_final) cfg->on_final(call.message ? call.message : "", cfg->ud);
+            if (cfg->report_sink) sb_append(cfg->report_sink, call.message ? call.message : "");
             toolcall_free(&call);
             finished = 1;
             break;
@@ -374,6 +376,51 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
             if (cfg->on_tool_result) cfg->on_tool_result(sb_cstr(&po), 1, cfg->ud);
             history_push(h, MSG_TOOL_RESULT, sb_cstr(&po));
             sb_free(&po);
+            toolcall_free(&call);
+            continue;
+        }
+
+        /* Sub-agent: run the task in a FRESH context on the same backend/tools
+         * and feed back only its final report — the context-isolation trick
+         * (summarize a folder without its contents flooding this conversation).
+         * The child streams nothing but its tool calls still render and still
+         * hit the permission gate; depth is capped at one level. */
+        if (call.kind == TC_AGENT) {
+            if (cfg->on_tool_call) cfg->on_tool_call(&call, cfg->ud);
+            if (cfg->depth >= 1) {
+                const char *m = "ERROR: sub-agents cannot spawn sub-agents. Do the work "
+                                "directly with the other tools.";
+                if (cfg->on_tool_result) cfg->on_tool_result(m, 0, cfg->ud);
+                history_push(h, MSG_TOOL_RESULT, m);
+                toolcall_free(&call);
+                continue;
+            }
+            agent_config ccfg = *cfg;
+            ccfg.depth = cfg->depth + 1;
+            ccfg.plan_enabled = 0;
+            ccfg.on_iter_start = NULL;      /* no streamed text from the child... */
+            ccfg.on_token = NULL;
+            ccfg.on_message = NULL;
+            ccfg.on_final = NULL;
+            ccfg.on_notice = NULL;
+            strbuf report; sb_init(&report);
+            ccfg.report_sink = &report;     /* ...only its captured report */
+            agent_session child;
+            agent_session_init(&child, &ccfg);
+            int crc = agent_session_run_turn(&child, call.task ? call.task : "");
+            s->turn_completion_tokens += child.turn_completion_tokens;
+            strbuf obs2; sb_init(&obs2);
+            if (report.len > 0)
+                sb_appendf(&obs2, "Sub-agent report:\n%s", sb_cstr(&report));
+            else
+                sb_appendf(&obs2, "ERROR: the sub-agent finished without a report%s",
+                           crc == 0 ? "" : " (it hit its iteration cap)");
+            if (cfg->on_tool_result) cfg->on_tool_result(sb_cstr(&obs2), report.len > 0, cfg->ud);
+            log_kv(cfg, "result", sb_cstr(&obs2));
+            history_push(h, MSG_TOOL_RESULT, sb_cstr(&obs2));
+            sb_free(&obs2);
+            sb_free(&report);
+            agent_session_free(&child);
             toolcall_free(&call);
             continue;
         }

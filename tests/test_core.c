@@ -100,6 +100,12 @@ static void test_toolcall(void) {
     assert(rc == 0 && tc.kind == TC_RUN_COMMAND && strcmp(tc.cmd, "ls") == 0);
     toolcall_free(&tc);
 
+    /* agent (sub-task delegation) */
+    rc = toolcall_parse("<tool_call>{\"name\":\"agent\",\"arguments\":"
+                        "{\"task\":\"summarize src/\"}}</tool_call>", &tc);
+    assert(rc == 0 && tc.kind == TC_AGENT && strcmp(tc.task, "summarize src/") == 0);
+    toolcall_free(&tc);
+
     /* fetch */
     rc = toolcall_parse("<tool_call>{\"name\":\"fetch\",\"arguments\":"
                         "{\"url\":\"https://x.test/a\"}}</tool_call>", &tc);

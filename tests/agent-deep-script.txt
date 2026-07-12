@@ -1,0 +1,7 @@
+<tool_call>{"name": "agent", "arguments": {"task": "delegate further"}}</tool_call>
+===
+<tool_call>{"name": "agent", "arguments": {"task": "go deeper"}}</tool_call>
+===
+<tool_call>{"name": "final", "arguments": {"message": "Stopped at one level."}}</tool_call>
+===
+<tool_call>{"name": "final", "arguments": {"message": "Depth respected."}}</tool_call>

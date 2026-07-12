@@ -1,0 +1,7 @@
+<tool_call>{"name": "agent", "arguments": {"task": "write notes.txt saying the subagent was here, then finish"}}</tool_call>
+===
+<tool_call>{"name": "write_file", "arguments": {"path": "notes.txt", "content": "the subagent was here\n"}}</tool_call>
+===
+<tool_call>{"name": "final", "arguments": {"message": "Wrote notes.txt with the note."}}</tool_call>
+===
+<tool_call>{"name": "final", "arguments": {"message": "Delegated and done."}}</tool_call>

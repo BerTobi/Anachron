@@ -7,6 +7,21 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-12
+
+### Added
+- **`agent` tool: sub-agents with fresh context.** The model can delegate a
+  self-contained task to a sub-agent that has the same tools and sandbox but a
+  separate, empty conversation — the parent receives ONLY the final report.
+  This is the context-isolation trick from clide (the Claude Code ancestor
+  that fanned out models to answer questions about whole folders): "summarize
+  every file in src/" no longer floods the parent's history with file
+  contents. The child's tool calls still render in the transcript and still
+  hit the permission gate; streaming and chatter are suppressed; nesting is
+  capped at one level (a sub-agent that tries to spawn another is refused);
+  the child's generated tokens count toward the turn's band total. Offered on
+  hosted-API backends.
+
 ## [0.10.0] - 2026-07-12
 
 ### Added

@@ -259,7 +259,13 @@ static const char *VISION_ADDENDUM =
     "  launched, or to read something only visible in another window.\n"
     "- fetch        {\"url\": \"<http(s)://...>\"}  GET a web page or API and read it as\n"
     "  text (HTML is stripped). Use it for documentation, error messages, or data the\n"
-    "  user points you at. Do not invent URLs; prefer ones the user gave you.";
+    "  user points you at. Do not invent URLs; prefer ones the user gave you.\n"
+    "- agent        {\"task\": \"<self-contained task>\"}  run a sub-agent that has the\n"
+    "  same tools but a FRESH, separate context; you receive ONLY its final report.\n"
+    "  Use it when the intermediate output would flood your context: \"summarize every\n"
+    "  file in src/\", \"find where X is handled in this big log\". Give it ONE complete,\n"
+    "  standalone task (it cannot see this conversation); fan out several calls for\n"
+    "  several independent chunks.";
 
 void prompt_render_system(strbuf *out, int plan_enabled, const char *project_context,
                           int lean, int vision) {

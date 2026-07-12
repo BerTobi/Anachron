@@ -50,6 +50,10 @@ BIGGER BRAINS: REMOTE INFERENCE AND HOSTED APIS
   Everything else stays the same: the [y/N] gate, /files, the transcript, the
   sandbox. Only the brain moves.
 
+  THE MODEL CAN DELEGATE (hosted APIs only): an  agent  tool runs a sub-agent
+  with the same tools but a fresh, separate context and reports back only its
+  conclusion - so "summarize every file in src" does not flood the conversation.
+
   THE MODEL CAN READ THE WEB (hosted APIs only): a  fetch  tool GETs a page or
   API and reads it as text (asks [y/N] first). Plain-http and LAN URLs work on
   stock XP; https needs a TLS-1.2-capable system, same as the APIs themselves.
