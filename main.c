@@ -9,6 +9,10 @@
  *
  * The renderer lives here (not in /core) and turns the agent's event callbacks
  * into a streamed transcript. Plain ASCII only — the XP console ignores ANSI. */
+#ifndef _WIN32
+#define _DEFAULT_SOURCE 1   /* setenv with -std=c99 */
+#endif
+
 #include "agent.h"
 #include "infer.h"
 #include "toolcall.h"
@@ -611,7 +615,12 @@ static void stats_render(ui *u, const session_stats *st) {
 static void usage(const char *prog) {
     fprintf(stderr,
         "usage: %s [options] [task...]\n"
-        "  --model PATH      GGUF model (required for the llama backend; ignored by the stub)\n"
+        "  --model SPEC      what to run on:\n"
+        "                      path/to/model.gguf          local model (llama builds)\n"
+        "                      http://host:8080            a LAN llama-server (remote inference)\n"
+        "                      anthropic:claude-opus-4-8   the Anthropic API (ANACHRON_API_KEY)\n"
+        "                      openai:MODEL                any OpenAI-compatible endpoint\n"
+        "                                                  (ANACHRON_API_URL overrides the base)\n"
         "  --sandbox DIR     working directory tools are confined to (default \".\")\n"
         "  --max-iters N     tool-loop iteration cap per turn (default 8)\n"
         "  --ctx N           model context window in tokens (default 4096)\n"
@@ -1288,9 +1297,12 @@ static char *pick_model(void) {
     if (n > 0) {
         fprintf(stdout, "Models found in %s:\n", where);
         for (int i = 0; i < n; i++) fprintf(stdout, "  %d) %s\n", i + 1, v[i]);
-        fputs("Choose a number, or type a .gguf path: ", stdout);
+        fputs("Choose a number, or type a .gguf path / http://server:port / "
+              "anthropic:<model> / openai:<model>: ", stdout);
     } else {
-        fprintf(stdout, "No .gguf models found in %s. Type a model path: ", where);
+        fprintf(stdout, "No .gguf models found in %s.\n"
+                        "Type a .gguf path, a llama-server URL (http://host:8080), or an\n"
+                        "API model (anthropic:claude-opus-4-8 / openai:<model>): ", where);
     }
     fflush(stdout);
     char buf[512]; char *pick = NULL;
@@ -1306,14 +1318,34 @@ static char *pick_model(void) {
     return pick;
 }
 
-/* Remember the model's display name for the status band: the path's basename with
- * a ".gguf" extension dropped. NULL means the stub backend. */
+/* Is the model spec a network backend (LAN llama-server or a hosted API)? */
+static int spec_networked(const char *m) {
+    return m && (strncmp(m, "http://", 7) == 0 || strncmp(m, "https://", 8) == 0 ||
+                 strncmp(m, "anthropic:", 10) == 0 || strncmp(m, "openai:", 7) == 0);
+}
+
+/* Remember the model's display name for the status band: a GGUF path's basename
+ * (extension dropped), a server URL's host:port, or an API spec's model id.
+ * NULL means the stub backend. */
 static void ui_set_model(ui *u, const char *path) {
     const char *b = path ? path : "stub";
-    for (const char *p = b; *p; p++)
-        if (*p == '/' || *p == '\\') b = p + 1;
-    size_t n = strlen(b);
-    if (ends_gguf(b)) n -= 5;
+    size_t n;
+    if (strncmp(b, "http://", 7) == 0 || strncmp(b, "https://", 8) == 0) {
+        b = strstr(b, "://") + 3;                       /* show host:port */
+        const char *e = strchr(b, '/');
+        n = e ? (size_t)(e - b) : strlen(b);
+    } else if (strncmp(b, "anthropic:", 10) == 0) {
+        b += 10;                                        /* show the model id */
+        n = strlen(b);
+    } else if (strncmp(b, "openai:", 7) == 0) {
+        b += 7;
+        n = strlen(b);
+    } else {
+        for (const char *p = b; *p; p++)
+            if (*p == '/' || *p == '\\') b = p + 1;
+        n = strlen(b);
+        if (ends_gguf(b)) n -= 5;
+    }
     if (n >= sizeof u->model_name) n = sizeof u->model_name - 1;
     memcpy(u->model_name, b, n);
     u->model_name[n] = '\0';
@@ -1399,6 +1431,7 @@ static cmd_result handle_command(const char *line, agent_session *s,
         *backend_slot = nb;
         s->cfg.infer = nb;          /* run_turn reads the backend from the session's cfg */
         ui_set_model(u, chosen);    /* keep the status band's name in step */
+        u->ctx_total = spec_networked(chosen) ? 0 : ctx_tokens;  /* server ctx unknown: hide % */
         fprintf(stdout, "switched to model %s\n", chosen);
         free(chosen);
         return CMD_HANDLED;
@@ -1519,6 +1552,16 @@ static json_value *load_config(const char **out_path) {
     return NULL;
 }
 
+/* Set an environment variable (the backends read their config from env, so the
+ * agent.json keys are forwarded this way). */
+static void set_env_kv(const char *name, const char *value) {
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
 /* True only for an explicit truthy env value (1 / true / yes / on, any case); every other
  * value — 0/false/no/off/empty/unset — is false, so a falsy spelling can't flip a gate on. */
 static int env_truthy(const char *name) {
@@ -1558,6 +1601,7 @@ static int run_setup(char **model_out, char **sandbox_out, int *lean_out) {
     for (;;) {
         char *p = pick_model();                       /* lists nearby .gguf, or asks for a path */
         if (!p) return 0;                             /* nothing entered / EOF -> cancel */
+        if (spec_networked(p)) { model = p; break; }  /* server/API specs aren't files */
         FILE *t = fopen(p, "rb");
         if (!t) { fprintf(stdout, "  Can't open \"%s\" - try again.\n", p); free(p); continue; }
         fclose(t);
@@ -1610,6 +1654,7 @@ int main(int argc, char **argv) {
     int max_iters = 8;
     int ctx = 4096;  /* the system prompt + few-shot overhead is ~1.5k tokens; 2048
                         left too little room and long sessions overflowed */
+    int ctx_explicit = 0;   /* --ctx / config set it; else networked backends get more */
     int want_color = 1;                  /* gated by TTY + platform below; --no-color forces off */
     int color_force = 0;                 /* --color forces colour even when not a TTY (pipes) */
     int yolo = env_truthy("ANACHRON_YOLO");   /* skip the permission gate (only 1/true/yes/on) */
@@ -1631,7 +1676,16 @@ int main(int argc, char **argv) {
             grammar_path = owned_grammar = xstrdup(s);
         if ((s = json_as_str(json_obj_get(conf, "log"))))
             log_path = owned_log = xstrdup(s);
+        /* Network-backend credentials/config: forwarded as env (which also wins if
+         * both are set, since the file is read first). Never printed anywhere. */
+        if ((s = json_as_str(json_obj_get(conf, "api_key"))) && !getenv("ANACHRON_API_KEY"))
+            set_env_kv("ANACHRON_API_KEY", s);
+        if ((s = json_as_str(json_obj_get(conf, "api_url"))) && !getenv("ANACHRON_API_URL"))
+            set_env_kv("ANACHRON_API_URL", s);
+        if ((s = json_as_str(json_obj_get(conf, "remote_key"))) && !getenv("ANACHRON_REMOTE_KEY"))
+            set_env_kv("ANACHRON_REMOTE_KEY", s);
         max_iters    = cfg_int(conf, "max_iters", max_iters);
+        if (json_obj_get(conf, "ctx")) ctx_explicit = 1;
         ctx          = cfg_int(conf, "ctx", ctx);
         verify_writes = cfg_bool(conf, "verify", verify_writes);
         plan_enabled  = cfg_bool(conf, "plan", plan_enabled);
@@ -1653,6 +1707,7 @@ int main(int argc, char **argv) {
             max_iters = atoi(argv[++i]);
         } else if (strcmp(a, "--ctx") == 0 && i + 1 < argc) {
             ctx = atoi(argv[++i]);
+            ctx_explicit = 1;
         } else if (strcmp(a, "--grammar") == 0 && i + 1 < argc) {
             grammar_path = argv[++i];
         } else if (strcmp(a, "--no-grammar") == 0) {
@@ -1770,6 +1825,10 @@ int main(int argc, char **argv) {
 
     int use_color = color_force || (want_color && plat_isatty_stdout());
 
+    /* Network backends aren't bound by a local 4096-token window; give the history
+     * budget more room unless the user pinned --ctx themselves. */
+    if (!ctx_explicit && spec_networked(model)) ctx = 32768;
+
     char *project_context = load_project_context(sandbox);
 
     if (!log_path) { const char *e = getenv("ANACHRON_LOG"); if (e && *e) log_path = e; }
@@ -1797,7 +1856,7 @@ int main(int argc, char **argv) {
     ui_console_init(&u);   /* capture console attrs (Win32); set unicode capability */
     u.yolo = yolo;
     ui_set_model(&u, model);   /* status-band display name ("stub" when no model) */
-    u.ctx_total = ctx;
+    u.ctx_total = spec_networked(model) ? 0 : ctx;   /* server/API ctx unknown: hide the % */
     agent_config cfg = {0};
     cfg.infer = backend;
     cfg.grammar = grammar;          /* stub ignores it; llama backend honors it */

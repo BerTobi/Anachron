@@ -7,6 +7,50 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-03
+
+The local 0.5B stops being the ceiling: one binary now carries three backend
+families, selected at runtime by the shape of the model spec — switchable
+mid-session with `/model`.
+
+### Added
+- **Remote inference** — `--model http://gpu-box:8080` points ANACHRON at a
+  llama.cpp `llama-server` on the LAN (`/completion`; a full path in the URL
+  overrides the endpoint). The big model runs on the big machine; this side is a
+  thin client, so the Pentium-M is no longer the ceiling. Plain HTTP — **works on
+  real XP** with no TLS involved (WinINet on Windows, raw sockets on POSIX, with
+  Ctrl+C honoured mid-request). GBNF grammar still applies (llama-server accepts
+  it), `cache_prompt` keeps the server's KV warm across turns, and the server's
+  token counts flow into the status band. `--api-key` servers: `ANACHRON_REMOTE_KEY`
+  or `"remote_key"` in agent.json.
+- **Hosted chat APIs** — `--model anthropic:claude-opus-4-8` (Anthropic Messages
+  API: `x-api-key` + `anthropic-version: 2023-06-01`, required `max_tokens`, no
+  sampling params — current models reject them) and `--model openai:MODEL` (any
+  OpenAI-compatible `/v1/chat/completions`: llama-server, LM Studio, Ollama, or
+  api.openai.com). Key via `ANACHRON_API_KEY` / `"api_key"`; base URL via
+  `ANACHRON_API_URL` / `"api_url"` — point it at a LAN server and no key is needed.
+  The APIs receive the structured conversation (tool results as `<tool_response>`
+  user turns) plus ANACHRON's system prompt, so the existing `<tool_call>` text
+  protocol, agent loop, permission gate, and transcript work unchanged. Anthropic
+  refusals (`stop_reason: "refusal"`) surface as a readable notice. HTTPS transport:
+  WinINet on Windows (TLS per OS — the LAN option is the XP-reliable path), the
+  system `curl` on POSIX (secrets via a private temp file, never argv).
+- **Runtime backend dispatch** — the infer layer is now a router over per-backend
+  vtables (`infer/infer.c` + `infer_backend.h`); every build ships the network
+  backends alongside its local one (stub or in-process llama). The separate
+  `make remote` binary is gone — remote is built in everywhere.
+- `tests/net-e2e.sh` (`make net-e2e`): the same scripted write-file exchange
+  through a fake server speaking all three wire shapes, with wire-contract
+  assertions (auth headers, grammar routed only to llama-server, message
+  structure, usage plumbing). The XP build is additionally validated under Wine
+  against the same server.
+
+### Changed
+- Setup and `/model` accept the new spec forms; the status band shows `host:port`
+  for servers and the model id for APIs, and hides the ctx% (the server's window
+  isn't ours to measure). Networked backends default the history budget to a
+  roomier `--ctx 32768` unless `--ctx` is set explicitly.
+
 ## [0.6.0] - 2026-07-03
 
 Phase 4 of the UI-polish plan (session awareness) — and a self-updater, so a new
@@ -464,7 +508,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/BerTobi/Anachron/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/BerTobi/Anachron/compare/v0.5.5...v0.6.0
 [0.5.5]: https://github.com/BerTobi/Anachron/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/BerTobi/Anachron/compare/v0.5.3...v0.5.4

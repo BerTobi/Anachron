@@ -75,4 +75,19 @@ int  plat_move_file(const char *from, const char *to);
 int  plat_http_get(const char *url, char **body, size_t *body_len,
                    char *errbuf, size_t errsz);
 
+/* HTTP(S) POST with a JSON body (Content-Type: application/json is always sent;
+ * `headers` adds extra "Name: value\r\n" lines, may be NULL). Returns 0 whenever an
+ * HTTP response was obtained — *status carries the code and *resp the body, even
+ * for 4xx/5xx (API error bodies explain themselves) — and non-zero when no response
+ * could be had (connect/TLS failure), with the reason in errbuf.
+ *   Windows: WinINet, http and https alike (TLS reach depends on the OS - a LAN
+ *            http:// llama-server works on stock XP; api.anthropic.com needs a
+ *            TLS-1.2-capable Windows).
+ *   POSIX:   raw socket for http:// (interrupt-aware); https:// is delegated to
+ *            the system `curl` (secrets passed via a private temp file, not argv). */
+int  plat_http_post(const char *url, const char *headers,
+                    const char *body, size_t body_len,
+                    char **resp, size_t *resp_len, int *status,
+                    char *errbuf, size_t errsz);
+
 #endif /* ANACHRON_PLATFORM_H */

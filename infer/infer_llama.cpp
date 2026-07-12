@@ -10,7 +10,7 @@
  * deterministic, reliable tool calls, optionally masked by the GBNF grammar, with a
  * gentle repeat penalty and a hard runaway-repetition stop so a tiny model can't
  * loop on one token forever. */
-#include "infer.h"
+#include "infer_backend.h"
 #include "interrupt.h"
 
 #include "llama.h"
@@ -41,7 +41,7 @@
 
 extern "C" double plat_time_sec(void);   /* monotonic wall clock (platform_*.c) */
 
-struct infer_ctx {
+struct llama_impl {
     llama_model              *model;
     llama_context            *ctx;
     const llama_vocab        *vocab;
@@ -165,7 +165,7 @@ static bool stdout_is_console(void) {
 }
 
 /* Compose the indicator text. Kept short: it must fit after the streamed text. */
-static int tail_text(infer_ctx *c, double now, char *buf, size_t bufsz) {
+static int tail_text(llama_impl *c, double now, char *buf, size_t bufsz) {
     const int W = 10;
     double frac = (c->last_decode_sec > 0.0) ? (now - c->decode_t0) / c->last_decode_sec : 0.0;
     if (frac < 0.0) frac = 0.0;
@@ -184,7 +184,7 @@ static int tail_text(infer_ctx *c, double now, char *buf, size_t bufsz) {
 
 #ifdef _WIN32
 /* Save / return to the end-of-text cursor position via the Console API. */
-static int tail_save_pos(infer_ctx *c, int need) {
+static int tail_save_pos(llama_impl *c, int need) {
     fflush(stdout);   /* anything the UI buffered must land before we measure */
     HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
     CONSOLE_SCREEN_BUFFER_INFO sbi;
@@ -196,7 +196,7 @@ static int tail_save_pos(infer_ctx *c, int need) {
     return 1;
 }
 
-static void tail_home(infer_ctx *c) {
+static void tail_home(llama_impl *c) {
     fflush(stdout);
     COORD pos;
     pos.X = (SHORT)c->tail_x;
@@ -204,7 +204,7 @@ static void tail_home(infer_ctx *c) {
     SetConsoleCursorPosition(GetStdHandle(STD_OUTPUT_HANDLE), pos);
 }
 
-static void tail_draw(infer_ctx *c, const char *txt, int len) {
+static void tail_draw(llama_impl *c, const char *txt, int len) {
     if (!c->tail_on) {
         if (!tail_save_pos(c, len + 4)) return;  /* +4: elapsed may widen ("59s"->"1m00s") */
         c->tail_on = 1;
@@ -218,7 +218,7 @@ static void tail_draw(infer_ctx *c, const char *txt, int len) {
     fflush(stdout);
 }
 
-static void tail_erase(infer_ctx *c) {
+static void tail_erase(llama_impl *c) {
     if (!c->tail_on) return;
     tail_home(c);
     for (int i = 0; i < c->tail_len; i++) fputc(' ', stdout);
@@ -228,14 +228,14 @@ static void tail_erase(infer_ctx *c) {
     c->tail_len = 0;
 }
 #else
-static void tail_draw(infer_ctx *c, const char *txt, int len) {
+static void tail_draw(llama_impl *c, const char *txt, int len) {
     (void)len;
     if (!c->tail_on) { fputs("\0337", stdout); c->tail_on = 1; }  /* DECSC: save end of text */
     printf("\0338\033[K%s", txt);   /* DECRC + erase-to-EOL + draw */
     fflush(stdout);
 }
 
-static void tail_erase(infer_ctx *c) {
+static void tail_erase(llama_impl *c) {
     if (!c->tail_on) return;
     fputs("\0338\033[K", stdout);
     fflush(stdout);
@@ -262,7 +262,7 @@ static bool load_progress_cb(float progress, void *ud) {
  * [probe], and later to drive the per-token bar and make Ctrl+C responsive mid-decode.
  * Returning true aborts the compute; false continues. */
 static bool decode_abort_cb(void *data) {
-    infer_ctx *c = (infer_ctx *)data;
+    llama_impl *c = (llama_impl *)data;
     if (!c) return false;
     c->decode_fires++;
     /* Ctrl+C felt mid-decode: abort this forward pass now instead of waiting up to a
@@ -309,7 +309,7 @@ static int env_threads(void) {
     return n;
 }
 
-extern "C" infer_ctx *infer_init(const char *gguf_path, int n_ctx) {
+static llama_impl *llama_open_impl(const char *gguf_path, int n_ctx) {
     if (!gguf_path) {
         fprintf(stderr, "infer_llama: no --model given\n");
         return nullptr;
@@ -358,7 +358,7 @@ extern "C" infer_ctx *infer_init(const char *gguf_path, int n_ctx) {
         return nullptr;
     }
 
-    infer_ctx *c = new infer_ctx;
+    llama_impl *c = new llama_impl;
     c->model = model;
     c->ctx = ctx;
     c->vocab = llama_model_get_vocab(model);
@@ -415,8 +415,9 @@ extern "C" infer_ctx *infer_init(const char *gguf_path, int n_ctx) {
     return c;
 }
 
-extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *grammar,
-                              void (*on_token)(const char *piece, void *ud), void *ud) {
+static int llama_generate_impl(void *impl, const char *prompt, const char *grammar,
+                               void (*on_token)(const char *piece, void *ud), void *ud) {
+    llama_impl *c = (llama_impl *)impl;
     llama_memory_t mem = llama_get_memory(c->ctx);
     const int n_ctx = (int)llama_n_ctx(c->ctx);
 
@@ -648,14 +649,27 @@ extern "C" int infer_generate(infer_ctx *c, const char *prompt, const char *gram
     return rc;
 }
 
-extern "C" void infer_last_usage(const infer_ctx *c, int *prompt_tokens, int *completion_tokens) {
+static void llama_last_usage_impl(const void *impl, int *prompt_tokens, int *completion_tokens) {
+    const llama_impl *c = (const llama_impl *)impl;
     if (prompt_tokens) *prompt_tokens = c ? c->last_prompt_tokens : 0;
     if (completion_tokens) *completion_tokens = c ? c->last_completion_tokens : 0;
 }
 
-extern "C" void infer_free(infer_ctx *c) {
+static void llama_free_impl(void *impl) {
+    llama_impl *c = (llama_impl *)impl;
     if (!c) return;
     llama_free(c->ctx);
     llama_model_free(c->model);
     delete c;
+}
+
+extern "C" int llama_backend_open(const char *spec, int n_ctx, infer_backend *out) {
+    llama_impl *c = llama_open_impl(spec, n_ctx);
+    if (!c) return -1;
+    out->impl = c;
+    out->generate = llama_generate_impl;
+    out->set_chat = nullptr;
+    out->last_usage = llama_last_usage_impl;
+    out->free_impl = llama_free_impl;
+    return 0;
 }

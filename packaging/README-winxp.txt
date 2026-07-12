@@ -15,6 +15,32 @@ a working folder, and whether to use the faster "lean" prompt, then offers to
 save your answers to agent.json so the next launch skips straight to the prompt.
 
 
+BIGGER BRAINS: REMOTE INFERENCE AND HOSTED APIS
+  The local 0.5B model is the floor, not the ceiling. The --model setting (or the
+  setup prompt, or /model in a session) also accepts:
+
+  http://gpu-box:8080
+      A llama.cpp "llama-server" running on another machine on your LAN - run a
+      7B/14B/70B there and this PC becomes a thin client. Plain HTTP, so it works
+      on real XP with no TLS trouble. On the big machine:
+          llama-server -m big-model.gguf --host 0.0.0.0 --port 8080
+      If the server uses --api-key, set ANACHRON_REMOTE_KEY (or "remote_key" in
+      agent.json) here.
+
+  anthropic:claude-opus-4-8
+      The Anthropic API. Needs ANACHRON_API_KEY (or "api_key" in agent.json).
+      NOTE: api.anthropic.com needs TLS 1.2 - stock XP SP3 cannot reach it
+      (POSReady-patched systems may). The LAN option above always works.
+
+  openai:MODEL_NAME
+      Any OpenAI-compatible /v1/chat/completions endpoint. Point ANACHRON_API_URL
+      (or "api_url" in agent.json) at a LAN server (llama-server, LM Studio,
+      Ollama) - then no key is needed - or leave it default for api.openai.com.
+
+  Everything else stays the same: the [y/N] gate, /files, the transcript, the
+  sandbox. Only the brain moves.
+
+
 GET A MODEL (required - not included)
   ANACHRON does not ship a model (they are large and separately licensed).
   Download one small GGUF and put it in the  models\  folder:

@@ -223,6 +223,13 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
         if (shrunk) NOTICE(cfg, "context is filling up - compacted older history to fit");
         log_kv(cfg, "request", sb_cstr(&prompt));
 
+        /* Chat-API backends want the structured conversation, not the rendered
+         * ChatML string. Hand them the live history + system text; local and
+         * remote-llama backends ignore this. Valid through the generate below. */
+        strbuf sys_text; sb_init(&sys_text);
+        prompt_render_system(&sys_text, cfg->plan_enabled, cfg->project_context, cfg->lean);
+        infer_set_chat(cfg->infer, h, sb_cstr(&sys_text));
+
         /* Mode-gate: once a plan is recorded, switch to the plan-free grammar so the
          * model physically cannot emit another `plan` and must execute a step. */
         const char *grammar = (active_plan && cfg->grammar_act) ? cfg->grammar_act
@@ -231,6 +238,7 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
         stream_state st = { &acc, cfg };
         int grc = infer_generate(cfg->infer, sb_cstr(&prompt), grammar,
                                  on_token_trampoline, &st);
+        sb_free(&sys_text);
         if (grc == 0) {   /* skip usage on a failed generate: counts may be stale */
             int pt = 0, ct = 0;
             infer_last_usage(cfg->infer, &pt, &ct);

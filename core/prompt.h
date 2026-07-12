@@ -20,7 +20,7 @@ typedef struct {
     int      elided;  /* tool result already shrunk by compaction */
 } message;
 
-typedef struct {
+typedef struct history {   /* tag named so infer.h can forward-declare it */
     message *items;
     size_t   count;
     size_t   cap;
@@ -46,5 +46,11 @@ int history_shrink(history *h);
  * are off in the default build. */
 void prompt_render(strbuf *out, history *h, int plan_enabled, const char *active_plan,
                    const char *project_context, int lean);
+
+/* Just the system-prompt TEXT (no ChatML markers, no few-shot): the same content
+ * prompt_render wraps in the system turn. Chat-API backends send this as their
+ * `system` field — frontier models need no demonstrations, only the contract. */
+void prompt_render_system(strbuf *out, int plan_enabled, const char *project_context,
+                          int lean);
 
 #endif /* ANACHRON_PROMPT_H */

@@ -219,4 +219,113 @@ int plat_http_get(const char *url, char **body, size_t *body_len,
     return 0;
 }
 
+/* Split "scheme://host[:port]/path" for InternetConnect/HttpOpenRequest. */
+static int win_url_split(const char *url, char **host, INTERNET_PORT *port,
+                         char **path, int *https) {
+    const char *p;
+    if (strncmp(url, "http://", 7) == 0) { *https = 0; p = url + 7; }
+    else if (strncmp(url, "https://", 8) == 0) { *https = 1; p = url + 8; }
+    else return -1;
+    const char *slash = strchr(p, '/');
+    const char *hostend = slash ? slash : p + strlen(p);
+    const char *colon = NULL;
+    for (const char *q = p; q < hostend; q++) if (*q == ':') { colon = q; break; }
+    if (colon) {
+        *host = xstrndup(p, (size_t)(colon - p));
+        *port = (INTERNET_PORT)atoi(colon + 1);
+    } else {
+        *host = xstrndup(p, (size_t)(hostend - p));
+        *port = *https ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT;
+    }
+    *path = xstrdup(slash && *slash ? slash : "/");
+    return 0;
+}
+
+int plat_http_post(const char *url, const char *headers,
+                   const char *body, size_t body_len,
+                   char **resp, size_t *resp_len, int *status,
+                   char *errbuf, size_t errsz) {
+    if (errbuf && errsz) errbuf[0] = '\0';
+    char *host = NULL, *path = NULL;
+    INTERNET_PORT port = 0;
+    int https = 0;
+    if (win_url_split(url, &host, &port, &path, &https) != 0) {
+        if (errbuf) snprintf(errbuf, errsz, "bad URL: %s", url);
+        return -1;
+    }
+
+    int rc = -1;
+    HINTERNET net = NULL, conn = NULL, req = NULL;
+    net = InternetOpenA("anachron", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+    if (!net) {
+        if (errbuf) snprintf(errbuf, errsz, "InternetOpen failed (err %lu)", GetLastError());
+        goto done;
+    }
+    /* A remote server may spend minutes prefilling a big prompt before the first
+     * response byte — keep the receive window generous. */
+    {
+        DWORD t_conn = 15000, t_io = 600000;
+        InternetSetOptionA(net, INTERNET_OPTION_CONNECT_TIMEOUT, &t_conn, sizeof t_conn);
+        InternetSetOptionA(net, INTERNET_OPTION_SEND_TIMEOUT, &t_io, sizeof t_io);
+        InternetSetOptionA(net, INTERNET_OPTION_RECEIVE_TIMEOUT, &t_io, sizeof t_io);
+    }
+    conn = InternetConnectA(net, host, port, NULL, NULL,
+                            INTERNET_SERVICE_HTTP, 0, 0);
+    if (!conn) {
+        if (errbuf) snprintf(errbuf, errsz, "cannot connect to %s:%u (err %lu)",
+                             host, (unsigned)port, GetLastError());
+        goto done;
+    }
+    req = HttpOpenRequestA(conn, "POST", path, NULL, NULL, NULL,
+                           INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE |
+                           INTERNET_FLAG_NO_UI | INTERNET_FLAG_KEEP_CONNECTION |
+                           (https ? INTERNET_FLAG_SECURE : 0), 0);
+    if (!req) {
+        if (errbuf) snprintf(errbuf, errsz, "HttpOpenRequest failed (err %lu)", GetLastError());
+        goto done;
+    }
+    {
+        strbuf h; sb_init(&h);
+        sb_append(&h, "Content-Type: application/json\r\n");
+        if (headers) sb_append(&h, headers);
+        BOOL ok = HttpSendRequestA(req, sb_cstr(&h), (DWORD)h.len,
+                                   (void *)body, (DWORD)body_len);
+        sb_free(&h);
+        if (!ok) {
+            if (errbuf) snprintf(errbuf, errsz, "request failed (err %lu%s)",
+                                 GetLastError(),
+                                 https ? " - on stock XP this is usually the TLS ceiling" : "");
+            goto done;
+        }
+    }
+    {
+        DWORD st = 0, slen = sizeof st;
+        if (!HttpQueryInfoA(req, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+                            &st, &slen, NULL)) {
+            if (errbuf) snprintf(errbuf, errsz, "no HTTP status (err %lu)", GetLastError());
+            goto done;
+        }
+        *status = (int)st;
+    }
+    {
+        strbuf acc; sb_init(&acc);
+        char chunk[8192];
+        DWORD got = 0;
+        while (InternetReadFile(req, chunk, sizeof chunk, &got) && got > 0)
+            sb_append_n(&acc, chunk, (size_t)got);
+        *resp = xmalloc(acc.len + 1);
+        memcpy(*resp, sb_cstr(&acc), acc.len + 1);
+        *resp_len = acc.len;
+        sb_free(&acc);
+    }
+    rc = 0;
+done:
+    if (req) InternetCloseHandle(req);
+    if (conn) InternetCloseHandle(conn);
+    if (net) InternetCloseHandle(net);
+    free(host);
+    free(path);
+    return rc;
+}
+
 #endif /* _WIN32 */

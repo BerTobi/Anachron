@@ -8,8 +8,12 @@
 
 #include "platform.h"
 #include "strbuf.h"
+#include "interrupt.h"   /* Ctrl+C awareness in the blocking HTTP read loop */
 
 #include <dirent.h>
+#include <errno.h>
+#include <netdb.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -176,6 +180,263 @@ int plat_http_get(const char *url, char **body, size_t *body_len,
     if (errbuf && errsz)
         snprintf(errbuf, errsz, "this build has no HTTP (it builds from source)");
     return -1;
+}
+
+/* ---- plat_http_post ---------------------------------------------------------
+ * http://  -> a minimal raw-socket HTTP/1.1 client (LAN llama-server: no TLS).
+ * https:// -> delegated to the system `curl` (modern TLS without linking a TLS
+ *             stack). Secrets ride in a 0600 temp config file, never on argv. */
+
+/* Split "scheme://host[:port]/path" (path may be empty -> "/"). Returns 0/-1. */
+static int url_split(const char *url, char **host, char **port, char **path, int *https) {
+    const char *p;
+    if (strncmp(url, "http://", 7) == 0) { *https = 0; p = url + 7; }
+    else if (strncmp(url, "https://", 8) == 0) { *https = 1; p = url + 8; }
+    else return -1;
+    const char *slash = strchr(p, '/');
+    const char *hostend = slash ? slash : p + strlen(p);
+    const char *colon = memchr(p, ':', (size_t)(hostend - p));
+    if (colon) {
+        *host = xstrndup(p, (size_t)(colon - p));
+        *port = xstrndup(colon + 1, (size_t)(hostend - colon - 1));
+    } else {
+        *host = xstrndup(p, (size_t)(hostend - p));
+        *port = xstrdup(*https ? "443" : "80");
+    }
+    *path = xstrdup(slash && *slash ? slash : "/");
+    return 0;
+}
+
+static int http_dial(const char *host, const char *port) {
+    struct addrinfo hints, *res, *rp;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, port, &hints, &res) != 0) return -1;
+    int fd = -1;
+    for (rp = res; rp; rp = rp->ai_next) {
+        fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (fd < 0) continue;
+        if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    return fd;
+}
+
+static int send_all(int fd, const char *buf, size_t len) {
+    while (len) {
+        ssize_t n = write(fd, buf, len);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) continue;
+            return -1;
+        }
+        buf += n;
+        len -= (size_t)n;
+    }
+    return 0;
+}
+
+/* De-chunk an HTTP/1.1 chunked body into `out`. */
+static void dechunk(const char *body, size_t len, strbuf *out) {
+    size_t i = 0;
+    while (i < len) {
+        size_t sz = 0;
+        int any = 0;
+        while (i < len && body[i] != '\r' && body[i] != '\n') {
+            char ch = body[i++];
+            int d;
+            if (ch >= '0' && ch <= '9') d = ch - '0';
+            else if (ch >= 'a' && ch <= 'f') d = ch - 'a' + 10;
+            else if (ch >= 'A' && ch <= 'F') d = ch - 'A' + 10;
+            else break;
+            if (sz > len) sz = len;          /* cap before the multiply: no wrap */
+            else sz = sz * 16 + (size_t)d;
+            any = 1;
+        }
+        while (i < len && body[i] != '\n') i++;
+        if (i < len) i++;
+        if (!any || sz == 0) break;
+        if (sz > len - i) sz = len - i;
+        sb_append_n(out, body + i, sz);
+        i += sz;
+        while (i < len && (body[i] == '\r' || body[i] == '\n')) i++;
+    }
+}
+
+/* The raw-socket path for http:// — reads until EOF, honours Ctrl+C between reads. */
+static int http_post_socket(const char *host, const char *port, const char *path,
+                            const char *headers, const char *body, size_t body_len,
+                            char **resp, size_t *resp_len, int *status,
+                            char *errbuf, size_t errsz) {
+    int fd = http_dial(host, port);
+    if (fd < 0) {
+        if (errbuf) snprintf(errbuf, errsz, "cannot connect to %s:%s", host, port);
+        return -1;
+    }
+    strbuf req; sb_init(&req);
+    sb_appendf(&req, "POST %s HTTP/1.1\r\nHost: %s:%s\r\n"
+                     "Content-Type: application/json\r\nContent-Length: %zu\r\n"
+                     "Connection: close\r\n",
+               path, host, port, body_len);
+    if (headers) sb_append(&req, headers);
+    sb_append(&req, "\r\n");
+    sb_append_n(&req, body, body_len);
+    int se = send_all(fd, sb_cstr(&req), req.len);
+    sb_free(&req);
+    if (se != 0) {
+        close(fd);
+        if (errbuf) snprintf(errbuf, errsz, "send failed to %s:%s", host, port);
+        return -1;
+    }
+
+    strbuf acc; sb_init(&acc);
+    char chunk[8192];
+    for (;;) {
+        /* poll so a Ctrl+C during a long server-side prefill aborts promptly */
+        struct pollfd pf; pf.fd = fd; pf.events = POLLIN;
+        int pr = poll(&pf, 1, 250);
+        if (interrupt_pending()) {
+            close(fd); sb_free(&acc);
+            if (errbuf) snprintf(errbuf, errsz, "interrupted");
+            return -1;
+        }
+        if (pr < 0) { if (errno == EINTR) continue; break; }
+        if (pr == 0) continue;
+        ssize_t n = read(fd, chunk, sizeof chunk);
+        if (n > 0) { sb_append_n(&acc, chunk, (size_t)n); continue; }
+        if (n == 0) break;
+        if (errno == EINTR) continue;
+        break;
+    }
+    close(fd);
+
+    const char *raw = sb_cstr(&acc);
+    const char *sep = strstr(raw, "\r\n\r\n");
+    if (!sep) {
+        sb_free(&acc);
+        if (errbuf) snprintf(errbuf, errsz, "malformed HTTP response from %s:%s", host, port);
+        return -1;
+    }
+    int st = 0;
+    (void)sscanf(raw, "HTTP/%*s %d", &st);
+    size_t hdr_len = (size_t)(sep - raw);
+    const char *body_start = sep + 4;
+    size_t blen = acc.len - hdr_len - 4;
+
+    int chunked;
+    {
+        char *hdrs = xstrndup(raw, hdr_len);
+        for (char *q = hdrs; *q; q++) if (*q >= 'A' && *q <= 'Z') *q += 32;
+        chunked = strstr(hdrs, "transfer-encoding: chunked") != NULL;
+        free(hdrs);
+    }
+    strbuf dec; sb_init(&dec);
+    if (chunked) dechunk(body_start, blen, &dec);
+    else         sb_append_n(&dec, body_start, blen);
+    sb_free(&acc);
+
+    *resp = xmalloc(dec.len + 1);
+    memcpy(*resp, sb_cstr(&dec), dec.len + 1);
+    *resp_len = dec.len;
+    *status = st;
+    sb_free(&dec);
+    return 0;
+}
+
+/* The curl path for https:// — headers via a private --config file so secrets
+ * never appear on the command line; body via a temp file; status via -w. */
+static int http_post_curl(const char *url, const char *headers,
+                          const char *body, size_t body_len,
+                          char **resp, size_t *resp_len, int *status,
+                          char *errbuf, size_t errsz) {
+    char hdrf[] = "/tmp/anachron-hdr-XXXXXX";
+    char bodyf[] = "/tmp/anachron-body-XXXXXX";
+    char respf[] = "/tmp/anachron-resp-XXXXXX";
+    int hfd = mkstemp(hdrf), bfd = mkstemp(bodyf), rfd = mkstemp(respf);
+    if (hfd < 0 || bfd < 0 || rfd < 0) {
+        if (hfd >= 0) { close(hfd); unlink(hdrf); }
+        if (bfd >= 0) { close(bfd); unlink(bodyf); }
+        if (rfd >= 0) { close(rfd); unlink(respf); }
+        if (errbuf) snprintf(errbuf, errsz, "cannot create temp files");
+        return -1;
+    }
+    close(rfd);
+    /* curl --config format: one option per line; headers carry the secrets. */
+    {
+        strbuf cfg; sb_init(&cfg);
+        sb_append(&cfg, "header = \"Content-Type: application/json\"\n");
+        const char *p = headers ? headers : "";
+        while (*p) {
+            const char *nl = strstr(p, "\r\n");
+            size_t len = nl ? (size_t)(nl - p) : strlen(p);
+            if (len > 0) {
+                sb_append(&cfg, "header = \"");
+                sb_append_n(&cfg, p, len);
+                sb_append(&cfg, "\"\n");
+            }
+            p = nl ? nl + 2 : p + len;
+        }
+        ssize_t wr = write(hfd, sb_cstr(&cfg), cfg.len);
+        (void)wr;
+        sb_free(&cfg);
+        close(hfd);
+    }
+    {
+        ssize_t wr = write(bfd, body, body_len);
+        (void)wr;
+        close(bfd);
+    }
+
+    strbuf cmd; sb_init(&cmd);
+    sb_appendf(&cmd, "curl -sS --max-time 600 --config %s --data-binary @%s "
+                     "-o %s -w '%%{http_code}' '%s'", hdrf, bodyf, respf, url);
+    char *out = NULL; size_t olen = 0; int code = -1;
+    int rr = plat_run_command(sb_cstr(&cmd), "/tmp", &out, &olen, &code);
+    sb_free(&cmd);
+    int st = out ? atoi(out) : 0;
+    int ok = (rr == 0 && code == 0 && st > 0);
+    if (ok) {
+        char *buf = NULL; size_t blen = 0;
+        if (plat_read_file(respf, &buf, &blen) == 0) {
+            *resp = buf;
+            *resp_len = blen;
+            *status = st;
+        } else {
+            ok = 0;
+            if (errbuf) snprintf(errbuf, errsz, "curl wrote no response file");
+        }
+    } else if (errbuf) {
+        snprintf(errbuf, errsz, "curl failed (%s)",
+                 out && *out ? out : "is curl installed?");
+    }
+    free(out);
+    unlink(hdrf); unlink(bodyf); unlink(respf);
+    return ok ? 0 : -1;
+}
+
+int plat_http_post(const char *url, const char *headers,
+                   const char *body, size_t body_len,
+                   char **resp, size_t *resp_len, int *status,
+                   char *errbuf, size_t errsz) {
+    if (errbuf && errsz) errbuf[0] = '\0';
+    char *host = NULL, *port = NULL, *path = NULL;
+    int https = 0;
+    if (url_split(url, &host, &port, &path, &https) != 0) {
+        if (errbuf) snprintf(errbuf, errsz, "bad URL: %s", url);
+        return -1;
+    }
+    int rc;
+    if (https) {
+        rc = http_post_curl(url, headers, body, body_len,
+                            resp, resp_len, status, errbuf, errsz);
+    } else {
+        rc = http_post_socket(host, port, path, headers, body, body_len,
+                              resp, resp_len, status, errbuf, errsz);
+    }
+    free(host); free(port); free(path);
+    return rc;
 }
 
 #endif /* !_WIN32 */

@@ -9,14 +9,14 @@
  *     final and assert real filesystem effects.
  *
  * Output is streamed to on_token in small chunks to exercise the streaming path. */
-#include "infer.h"
+#include "infer_backend.h"
 #include "strbuf.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-struct infer_ctx {
+struct stub_impl {
     char **entries;   /* scripted model outputs, in order */
     size_t count;
     size_t idx;       /* next entry to emit */
@@ -31,7 +31,7 @@ static const char *DEFAULT_FINAL =
     "</tool_call>";
 
 /* Split file contents on lines that are exactly "===" into a list of entries. */
-static void load_script(struct infer_ctx *c, const char *path) {
+static void load_script(struct stub_impl *c, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return;
     fseek(f, 0, SEEK_END);
@@ -69,23 +69,9 @@ static void load_script(struct infer_ctx *c, const char *path) {
     free(buf);
 }
 
-infer_ctx *infer_init(const char *gguf_path, int n_ctx) {
-    (void)gguf_path;
-    (void)n_ctx;
-    struct infer_ctx *c = xmalloc(sizeof *c);
-    c->entries = NULL;
-    c->count = 0;
-    c->idx = 0;
-    c->last_prompt_tokens = 0;
-    c->last_completion_tokens = 0;
-    const char *script = getenv("ANACHRON_STUB_SCRIPT");
-    if (script && *script) load_script(c, script);
-    return c;
-}
-
-int infer_generate(infer_ctx *c, const char *prompt, const char *grammar,
-                   void (*on_token)(const char *piece, void *ud), void *ud) {
-    (void)prompt;
+static int stub_generate(void *impl, const char *prompt, const char *grammar,
+                         void (*on_token)(const char *piece, void *ud), void *ud) {
+    struct stub_impl *c = impl;
     (void)grammar;
     const char *out = DEFAULT_FINAL;
     if (c->entries && c->idx < c->count) out = c->entries[c->idx++];
@@ -106,14 +92,35 @@ int infer_generate(infer_ctx *c, const char *prompt, const char *grammar,
     return 0;
 }
 
-void infer_last_usage(const infer_ctx *c, int *prompt_tokens, int *completion_tokens) {
+static void stub_last_usage(const void *impl, int *prompt_tokens, int *completion_tokens) {
+    const struct stub_impl *c = impl;
     if (prompt_tokens) *prompt_tokens = c ? c->last_prompt_tokens : 0;
     if (completion_tokens) *completion_tokens = c ? c->last_completion_tokens : 0;
 }
 
-void infer_free(infer_ctx *c) {
+static void stub_free(void *impl) {
+    struct stub_impl *c = impl;
     if (!c) return;
     for (size_t i = 0; i < c->count; i++) free(c->entries[i]);
     free(c->entries);
     free(c);
+}
+
+int stub_backend_open(const char *spec, int n_ctx, infer_backend *out) {
+    (void)spec;
+    (void)n_ctx;
+    struct stub_impl *c = xmalloc(sizeof *c);
+    c->entries = NULL;
+    c->count = 0;
+    c->idx = 0;
+    c->last_prompt_tokens = 0;
+    c->last_completion_tokens = 0;
+    const char *script = getenv("ANACHRON_STUB_SCRIPT");
+    if (script && *script) load_script(c, script);
+    out->impl = c;
+    out->generate = stub_generate;
+    out->set_chat = NULL;
+    out->last_usage = stub_last_usage;
+    out->free_impl = stub_free;
+    return 0;
 }

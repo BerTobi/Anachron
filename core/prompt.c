@@ -231,15 +231,26 @@ static const char *LEAN_FEWSHOT =
     IM_START "user\n<tool_response>\nWrote 36 bytes to add.c (syntax OK)\n</tool_response>" IM_END
     IM_START "assistant\n" "Saved it to add.c." IM_END;
 
-void prompt_render(strbuf *out, history *h, int plan_enabled, const char *active_plan,
-                   const char *project_context, int lean) {
+void prompt_render_system(strbuf *out, int plan_enabled, const char *project_context,
+                          int lean) {
     sb_clear(out);
-    sb_append(out, IM_START "system\n");
     sb_append(out, lean ? LEAN_SYSTEM_PROMPT : SYSTEM_PROMPT);
     if (plan_enabled) sb_append(out, PLAN_ADDENDUM);
     if (project_context && *project_context) {
         sb_append(out, "\n\nProject notes (from AGENTS.md):\n");
         sb_append(out, project_context);
+    }
+}
+
+void prompt_render(strbuf *out, history *h, int plan_enabled, const char *active_plan,
+                   const char *project_context, int lean) {
+    sb_clear(out);
+    sb_append(out, IM_START "system\n");
+    {
+        strbuf sys; sb_init(&sys);
+        prompt_render_system(&sys, plan_enabled, project_context, lean);
+        sb_append(out, sb_cstr(&sys));
+        sb_free(&sys);
     }
     sb_append(out, IM_END);
     sb_append(out, lean ? LEAN_FEWSHOT : FEWSHOT);

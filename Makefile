@@ -23,7 +23,10 @@ CFLAGS  ?= -std=c99 -O2 $(WARN) $(SSE2) $(INCLUDES)
 
 CORE   = core/strbuf.c core/json.c core/sandbox.c core/toolcall.c core/verify.c core/obsfmt.c core/edit.c core/glob.c core/gitignore.c core/diff.c core/interrupt.c core/prompt.c core/agent.c
 TOOLS  = tools/tools.c
-INFER  = infer/infer_stub.c
+# The router + the network backends ship in EVERY build; the local backend differs
+# (stub in dev/test builds, in-process llama in the llama/antix/xp builds).
+INFER_NET = infer/infer.c infer/infer_remote.c infer/infer_api.c
+INFER  = $(INFER_NET) infer/infer_stub.c
 MAIN   = main.c
 
 # Every target compiles all sources in one command, so list the headers as an
@@ -43,7 +46,8 @@ LLAMA_LIBDIR = $(LLAMA_DIR)/build-sse2/bin
 LLAMA_LINK   = -L$(LLAMA_LIBDIR) -Wl,-rpath,$(abspath $(LLAMA_LIBDIR)) \
                -Wl,--no-as-needed -lllama -lggml -lggml-base -lggml-cpu -Wl,--as-needed \
                -lpthread -lm -ldl
-LL_CSRC      = $(CORE) $(TOOLS) platform/platform_posix.c $(MAIN)
+LLAMA_DEF    = -DANACHRON_HAVE_LLAMA
+LL_CSRC      = $(CORE) $(TOOLS) $(INFER_NET) platform/platform_posix.c $(MAIN)
 
 # --- Phase 3: antiX i686 (-m32) real-inference build. Links the 32-bit SSE2-only
 # libs from build-antix-m32 (built in Phase 0). The dev host can run the result. ---
@@ -76,11 +80,9 @@ XP_SYSLIBS = -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32
 XP_EXTRA  = -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -D_WIN32_WINNT=0x0501 -DWINVER=0x0501
 XP_LDFLAGS = -static -static-libgcc -static-libstdc++ -mconsole \
              -Wl,--major-subsystem-version=5 -Wl,--minor-subsystem-version=1
-LL_CSRC_WIN = $(CORE) $(TOOLS) platform/platform_win32.c $(MAIN)
+LL_CSRC_WIN = $(CORE) $(TOOLS) $(INFER_NET) platform/platform_win32.c $(MAIN)
 
-REMOTE_SRC = $(CORE) $(TOOLS) infer/infer_remote.c platform/platform_posix.c $(MAIN)
-
-.PHONY: all test e2e verify-e2e noop-e2e repair-e2e recover-e2e win llama antix xp xp-vendor bundle remote clean
+.PHONY: all test e2e verify-e2e noop-e2e repair-e2e recover-e2e net-e2e win llama antix xp xp-vendor bundle clean
 
 all: anachron
 
@@ -116,6 +118,12 @@ repair-e2e: anachron
 recover-e2e: anachron
 	sh tests/recover-e2e.sh
 
+# Network backends end-to-end: the same scripted exchange through a fake
+# llama-server (/completion), an OpenAI-compatible endpoint, and the Anthropic
+# Messages API, with wire-contract assertions (headers, grammar routing).
+net-e2e: anachron
+	sh tests/net-e2e.sh
+
 # Win32-layer test build: STUB backend (infer_stub.c) — NO model inference. This only
 # exercises the platform_win32 layer; it cannot run a model. The real model-backed
 # Windows build is `make xp`. Output is named -stub so it can't be mistaken for it.
@@ -136,7 +144,7 @@ anachron-llama: $(LL_CSRC) infer/infer_llama.cpp $(HEADERS)
 	@mkdir -p build-obj
 	@for f in $(LL_CSRC); do \
 	    echo "  CC  $$f"; \
-	    $(CC) $(CFLAGS) -c $$f -o build-obj/`basename $$f .c`.o || exit 1; \
+	    $(CC) $(CFLAGS) $(LLAMA_DEF) -c $$f -o build-obj/`basename $$f .c`.o || exit 1; \
 	done
 	@echo "  CXX infer/infer_llama.cpp"
 	@$(CXX) -std=c++17 -O2 $(INCLUDES) $(LLAMA_INC) -c infer/infer_llama.cpp -o build-obj/infer_llama.o
@@ -151,7 +159,7 @@ $(ANTIX_DIST)/anachron-llama-antix: $(LL_CSRC) infer/infer_llama.cpp $(HEADERS)
 	@mkdir -p build-obj-antix $(ANTIX_DIST)
 	@for f in $(LL_CSRC); do \
 	    echo "  CC32  $$f"; \
-	    $(CC) -m32 $(CFLAGS) -c $$f -o build-obj-antix/`basename $$f .c`.o || exit 1; \
+	    $(CC) -m32 $(CFLAGS) $(LLAMA_DEF) -c $$f -o build-obj-antix/`basename $$f .c`.o || exit 1; \
 	done
 	@echo "  CXX32 infer/infer_llama.cpp"
 	@$(CXX) -m32 $(SSE2) -std=c++17 -O2 $(INCLUDES) $(LLAMA_INC) -c infer/infer_llama.cpp -o build-obj-antix/infer_llama.o
@@ -170,7 +178,7 @@ $(XP_DIST)/anachron-xp.exe: $(LL_CSRC_WIN) infer/infer_llama.cpp $(HEADERS) $(XP
 	@mkdir -p build-obj-xp $(XP_DIST)
 	@for f in $(LL_CSRC_WIN); do \
 	    echo "  XPCC  $$f"; \
-	    $(XPCC) $(CFLAGS) $(XP_EXTRA) -c $$f -o build-obj-xp/`basename $$f .c`.o || exit 1; \
+	    $(XPCC) $(CFLAGS) $(XP_EXTRA) $(LLAMA_DEF) -c $$f -o build-obj-xp/`basename $$f .c`.o || exit 1; \
 	done
 	@echo "  XPCXX infer/infer_llama.cpp"
 	@$(XPCXX) $(SSE2) $(XP_EXTRA) -std=c++17 -O2 $(INCLUDES) $(XP_LLAMA_INC) -c infer/infer_llama.cpp -o build-obj-xp/infer_llama.o
@@ -204,12 +212,6 @@ bundle: xp
 	@cd dist && zip -qr $(BUNDLE).zip $(BUNDLE)
 	@echo "Built dist/$(BUNDLE).zip (exe + grammars + README + sample config; no model)."
 
-# Remote/GPU-offload build: thin HTTP client, NO local model/llama libs. Point it at
-# a llama.cpp server with ANACHRON_REMOTE=host:port. Pure C, links like the stub build.
-remote: anachron-remote
-anachron-remote: $(REMOTE_SRC) $(HEADERS)
-	$(CC) $(CFLAGS) $(REMOTE_SRC) -o $@
-
 clean:
-	rm -f anachron anachron-test anachron-stub.exe anachron-llama anachron-remote dist/xp/anachron-xp.exe
+	rm -f anachron anachron-test anachron-stub.exe anachron-llama dist/xp/anachron-xp.exe
 	rm -rf build-obj build-obj-antix build-obj-xp dist

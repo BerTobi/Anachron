@@ -1,0 +1,73 @@
+#!/bin/sh
+# Network-backend end-to-end: the SAME scripted exchange (write net.txt -> final)
+# through all three network backends against tests/fake_server.py:
+#   1. --model http://127.0.0.1:P            (llama-server /completion + grammar)
+#   2. --model openai:test    + ANACHRON_API_URL   (/v1/chat/completions)
+#   3. --model anthropic:test + ANACHRON_API_URL   (/v1/messages, x-api-key headers)
+# Asserts the real filesystem effect, the usage counts reaching the band, and the
+# wire details (auth headers, grammar only on /completion, messages structure).
+set -e
+cd "$(dirname "$0")/.."
+
+TMP=$(mktemp -d)
+PORT=$((20000 + $$ % 20000))
+python3 tests/fake_server.py "$PORT" "$TMP" &
+SRV=$!
+trap 'kill $SRV 2>/dev/null; rm -rf "$TMP"' EXIT
+sleep 0.5
+
+# 1) remote llama-server
+mkdir -p "$TMP/sb"
+OUT=$(./anachron --model "http://127.0.0.1:$PORT" --sandbox "$TMP/sb" --yolo "write net.txt" 2>&1)
+echo "$OUT" | grep -q 'Wrote net.txt over the wire' || { echo "FAIL(remote): $OUT"; exit 1; }
+grep -q 'hello from the network backend' "$TMP/sb/net.txt" || { echo "FAIL(remote): no file"; exit 1; }
+# two generates of 22 tokens each are summed over the turn
+echo "$OUT" | grep -q '44 tok' || { echo "FAIL(remote): server usage counts not shown"; exit 1; }
+echo "ok: remote llama-server backend (usage flows to the band)"
+
+# 2) openai-compatible
+rm -f "$TMP/sb/net.txt"
+OUT=$(ANACHRON_API_URL="http://127.0.0.1:$PORT" \
+      ./anachron --model "openai:test-model" --sandbox "$TMP/sb" --yolo "write net.txt" 2>&1)
+echo "$OUT" | grep -q 'Wrote net.txt over the wire' || { echo "FAIL(openai): $OUT"; exit 1; }
+grep -q 'hello from the network backend' "$TMP/sb/net.txt" || { echo "FAIL(openai): no file"; exit 1; }
+echo "ok: openai-compatible backend"
+
+# 3) anthropic
+rm -f "$TMP/sb/net.txt"
+OUT=$(ANACHRON_API_URL="http://127.0.0.1:$PORT" ANACHRON_API_KEY="sk-test-123" \
+      ./anachron --model "anthropic:test-model" --sandbox "$TMP/sb" --yolo "write net.txt" 2>&1)
+echo "$OUT" | grep -q 'Wrote net.txt over the wire' || { echo "FAIL(anthropic): $OUT"; exit 1; }
+grep -q 'hello from the network backend' "$TMP/sb/net.txt" || { echo "FAIL(anthropic): no file"; exit 1; }
+echo "ok: anthropic backend"
+
+# Wire assertions from the server's request log
+python3 - "$TMP/requests.log" <<'EOF'
+import json, sys
+reqs = [json.loads(l) for l in open(sys.argv[1])]
+comp = [r for r in reqs if r["path"] == "/completion"]
+oai  = [r for r in reqs if r["path"] == "/v1/chat/completions"]
+anth = [r for r in reqs if r["path"] == "/v1/messages"]
+assert comp and oai and anth, "an endpoint was never called"
+# llama-server got the prompt + grammar; APIs never get a grammar
+assert '"grammar"' in comp[0]["body"], "remote: grammar missing"
+assert all('"grammar"' not in r["body"] for r in oai + anth), "API got a grammar"
+# anthropic wire contract
+a = anth[0]
+assert a["x_api_key"] == "sk-test-123", "anthropic: x-api-key missing"
+assert a["anthropic_version"] == "2023-06-01", "anthropic: version header missing"
+b = json.loads(a["body"])
+assert "max_tokens" in b and "system" in b and b["messages"][0]["role"] == "user"
+assert "temperature" not in b, "anthropic: temperature must not be sent"
+# openai wire contract
+b = json.loads(oai[0]["body"])
+assert b["messages"][0]["role"] == "system", "openai: system message missing"
+assert b.get("temperature") == 0, "openai: temperature 0 expected"
+# the tool result came back as a wrapped user turn on the second call
+b2 = json.loads(anth[1]["body"])
+joined = json.dumps(b2["messages"])
+assert "tool_response" in joined, "anthropic: tool result not in follow-up"
+print("ok: wire contracts (headers, grammar routing, message structure)")
+EOF
+
+echo "NET-E2E PASS"
