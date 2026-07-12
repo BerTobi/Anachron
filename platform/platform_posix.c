@@ -173,13 +173,37 @@ int plat_move_file(const char *from, const char *to) {
     return rename(from, to) == 0 ? 0 : -1;   /* POSIX rename replaces atomically */
 }
 
-int plat_http_get(const char *url, char **body, size_t *body_len,
+static int url_split(const char *url, char **host, char **port, char **path, int *https);
+static int http_req_socket(const char *method,
+                           const char *host, const char *port, const char *path,
+                           const char *headers, const char *body, size_t body_len,
+                           char **resp, size_t *resp_len, int *status,
+                           char *errbuf, size_t errsz);
+static int http_req_curl(const char *method, const char *url, const char *headers,
+                         const char *body, size_t body_len,
+                         char **resp, size_t *resp_len, int *status,
+                         char *errbuf, size_t errsz);
+
+int plat_http_get(const char *url, const char *headers,
+                  char **resp, size_t *resp_len, int *status,
                   char *errbuf, size_t errsz) {
-    /* POSIX builds are built from source; no HTTP stack on purpose. */
-    (void)url; (void)body; (void)body_len;
-    if (errbuf && errsz)
-        snprintf(errbuf, errsz, "this build has no HTTP (it builds from source)");
-    return -1;
+    if (errbuf && errsz) errbuf[0] = '\0';
+    char *host = NULL, *port = NULL, *path = NULL;
+    int https = 0;
+    if (url_split(url, &host, &port, &path, &https) != 0) {
+        if (errbuf) snprintf(errbuf, errsz, "bad URL: %s", url);
+        return -1;
+    }
+    int rc;
+    if (https) {
+        rc = http_req_curl("GET", url, headers, NULL, 0,
+                           resp, resp_len, status, errbuf, errsz);
+    } else {
+        rc = http_req_socket("GET", host, port, path, headers, NULL, 0,
+                             resp, resp_len, status, errbuf, errsz);
+    }
+    free(host); free(port); free(path);
+    return rc;
 }
 
 /* ---- plat_http_post ---------------------------------------------------------
@@ -265,24 +289,27 @@ static void dechunk(const char *body, size_t len, strbuf *out) {
     }
 }
 
-/* The raw-socket path for http:// — reads until EOF, honours Ctrl+C between reads. */
-static int http_post_socket(const char *host, const char *port, const char *path,
-                            const char *headers, const char *body, size_t body_len,
-                            char **resp, size_t *resp_len, int *status,
-                            char *errbuf, size_t errsz) {
+/* The raw-socket path for http:// — reads until EOF, honours Ctrl+C between reads.
+ * method is "GET" or "POST"; body may be NULL for GET. */
+static int http_req_socket(const char *method,
+                           const char *host, const char *port, const char *path,
+                           const char *headers, const char *body, size_t body_len,
+                           char **resp, size_t *resp_len, int *status,
+                           char *errbuf, size_t errsz) {
     int fd = http_dial(host, port);
     if (fd < 0) {
         if (errbuf) snprintf(errbuf, errsz, "cannot connect to %s:%s", host, port);
         return -1;
     }
     strbuf req; sb_init(&req);
-    sb_appendf(&req, "POST %s HTTP/1.1\r\nHost: %s:%s\r\n"
-                     "Content-Type: application/json\r\nContent-Length: %zu\r\n"
-                     "Connection: close\r\n",
-               path, host, port, body_len);
+    sb_appendf(&req, "%s %s HTTP/1.1\r\nHost: %s:%s\r\nConnection: close\r\n",
+               method, path, host, port);
+    if (body)
+        sb_appendf(&req, "Content-Type: application/json\r\nContent-Length: %zu\r\n",
+                   body_len);
     if (headers) sb_append(&req, headers);
     sb_append(&req, "\r\n");
-    sb_append_n(&req, body, body_len);
+    if (body) sb_append_n(&req, body, body_len);
     int se = send_all(fd, sb_cstr(&req), req.len);
     sb_free(&req);
     if (se != 0) {
@@ -347,10 +374,10 @@ static int http_post_socket(const char *host, const char *port, const char *path
 
 /* The curl path for https:// — headers via a private --config file so secrets
  * never appear on the command line; body via a temp file; status via -w. */
-static int http_post_curl(const char *url, const char *headers,
-                          const char *body, size_t body_len,
-                          char **resp, size_t *resp_len, int *status,
-                          char *errbuf, size_t errsz) {
+static int http_req_curl(const char *method, const char *url, const char *headers,
+                         const char *body, size_t body_len,
+                         char **resp, size_t *resp_len, int *status,
+                         char *errbuf, size_t errsz) {
     char hdrf[] = "/tmp/anachron-hdr-XXXXXX";
     char bodyf[] = "/tmp/anachron-body-XXXXXX";
     char respf[] = "/tmp/anachron-resp-XXXXXX";
@@ -366,7 +393,8 @@ static int http_post_curl(const char *url, const char *headers,
     /* curl --config format: one option per line; headers carry the secrets. */
     {
         strbuf cfg; sb_init(&cfg);
-        sb_append(&cfg, "header = \"Content-Type: application/json\"\n");
+        if (body)
+            sb_append(&cfg, "header = \"Content-Type: application/json\"\n");
         const char *p = headers ? headers : "";
         while (*p) {
             const char *nl = strstr(p, "\r\n");
@@ -390,8 +418,12 @@ static int http_post_curl(const char *url, const char *headers,
     }
 
     strbuf cmd; sb_init(&cmd);
-    sb_appendf(&cmd, "curl -sS --max-time 600 --config %s --data-binary @%s "
-                     "-o %s -w '%%{http_code}' '%s'", hdrf, bodyf, respf, url);
+    if (body)
+        sb_appendf(&cmd, "curl -sS --max-time 600 -X %s --config %s --data-binary @%s "
+                         "-o %s -w '%%{http_code}' '%s'", method, hdrf, bodyf, respf, url);
+    else
+        sb_appendf(&cmd, "curl -sSL --max-time 120 -X %s --config %s "
+                         "-o %s -w '%%{http_code}' '%s'", method, hdrf, respf, url);
     char *out = NULL; size_t olen = 0; int code = -1;
     int rr = plat_run_command(sb_cstr(&cmd), "/tmp", &out, &olen, &code);
     sb_free(&cmd);
@@ -429,11 +461,11 @@ int plat_http_post(const char *url, const char *headers,
     }
     int rc;
     if (https) {
-        rc = http_post_curl(url, headers, body, body_len,
-                            resp, resp_len, status, errbuf, errsz);
+        rc = http_req_curl("POST", url, headers, body, body_len,
+                           resp, resp_len, status, errbuf, errsz);
     } else {
-        rc = http_post_socket(host, port, path, headers, body, body_len,
-                              resp, resp_len, status, errbuf, errsz);
+        rc = http_req_socket("POST", host, port, path, headers, body, body_len,
+                             resp, resp_len, status, errbuf, errsz);
     }
     free(host); free(port); free(path);
     return rc;

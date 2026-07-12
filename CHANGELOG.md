@@ -7,6 +7,23 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-07-12
+
+### Added
+- **`/model` lists your API provider's catalog.** When the current backend is an
+  API spec (`gemini:`/`anthropic:`/`openai:`), the picker queries the provider's
+  models endpoint with your key and lists the results — numbered and pickable —
+  alongside local `.gguf` files. Non-chat modalities (embeddings, tts, image,
+  audio, music, robotics, …) are filtered out. Honors `ANACHRON_API_URL`, so a
+  LAN llama-server / LM Studio catalog lists too.
+- `plat_http_get` now works on POSIX (raw socket for http, system curl for
+  https) and takes headers + returns the HTTP status on both platforms.
+
+### Changed
+- `/update`'s GitHub check is now explicitly Windows-only (the release assets
+  are Windows binaries; POSIX builds update from source) — previously it was
+  only accidental that POSIX skipped it.
+
 ## [0.8.0] - 2026-07-12
 
 Where the agent works, made deliberate: per-conversation scratch folders, a
@@ -555,7 +572,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/BerTobi/Anachron/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/BerTobi/Anachron/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/BerTobi/Anachron/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/BerTobi/Anachron/compare/v0.6.0...v0.7.0

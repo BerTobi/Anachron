@@ -86,6 +86,8 @@ typedef struct {
     int  sr_flush;       /* emitted whitespace: flush at the end of this piece (word pacing) */
     int  turn_labeled;   /* printed the once-per-turn "anachron" gutter label */
     char model_name[96]; /* model display name (basename, no .gguf) for the status band */
+    char model_spec[192];/* the full spec as given (path/URL/provider:model) — /model
+                            uses it to know whose catalog to list */
     int  ctx_total;      /* context window size, for the band's ctx % */
 } ui;
 
@@ -778,17 +780,24 @@ static void scan_updates_dir(const char *dir, int best[3], char **pick) {
     plat_dirlist_free(&dl);
 }
 
+#ifdef _WIN32
 /* Ask the GitHub API for the latest release; if it is newer, download its
- * *-winxp.exe asset into updates\. Returns a malloc'd path or NULL (message printed). */
+ * *-winxp.exe asset into updates\. Returns a malloc'd path or NULL (message
+ * printed). Windows-only: the release assets are Windows binaries. */
 static char *github_fetch_update(ui *u, const int cur[3], int got[3]) {
     char err[160];
-    char *body = NULL; size_t blen = 0;
+    char *body = NULL; size_t blen = 0; int hstatus = 0;
     ui_style(u, CR_MUTED); fputs("checking github.com for the latest release...\n", u->out);
     ui_reset(u); fflush(u->out);
-    if (plat_http_get(UPDATE_REPO_API, &body, &blen, err, sizeof err) != 0) {
+    if (plat_http_get(UPDATE_REPO_API, NULL, &body, &blen, &hstatus, err, sizeof err) != 0 ||
+        hstatus != 200) {
         ui_style(u, CR_MUTED);
-        fprintf(u->out, "  can't reach GitHub from here: %s\n", err);
+        if (hstatus != 0 && hstatus != 200)
+            fprintf(u->out, "  GitHub answered HTTP %d\n", hstatus);
+        else
+            fprintf(u->out, "  can't reach GitHub from here: %s\n", err);
         ui_reset(u);
+        free(body);
         return NULL;
     }
     char *pick = NULL;
@@ -824,9 +833,11 @@ static char *github_fetch_update(ui *u, const int cur[3], int got[3]) {
     }
     fprintf(u->out, "  %s is available - downloading %s (a few MB)...\n", tag, dl_name);
     fflush(u->out);
-    char *exe = NULL; size_t elen = 0;
-    if (plat_http_get(dl_url, &exe, &elen, err, sizeof err) != 0 || elen < 1024) {
-        fprintf(u->out, "  download failed: %s\n", err[0] ? err : "truncated file");
+    char *exe = NULL; size_t elen = 0; int dstatus = 0;
+    if (plat_http_get(dl_url, NULL, &exe, &elen, &dstatus, err, sizeof err) != 0 ||
+        dstatus != 200 || elen < 1024) {
+        fprintf(u->out, "  download failed: %s\n",
+                err[0] ? err : (dstatus != 200 ? "bad HTTP status" : "truncated file"));
         free(exe);
         json_free(v);
         return NULL;
@@ -846,6 +857,7 @@ static char *github_fetch_update(ui *u, const int cur[3], int got[3]) {
     pick = xstrdup(path);
     return pick;
 }
+#endif /* _WIN32 */
 
 static void cmd_update(ui *u) {
     int cur[3];
@@ -858,12 +870,15 @@ static void cmd_update(ui *u) {
     scan_updates_dir("updates", best, &cand);
     scan_updates_dir(".", best, &cand);
 
-    /* 2) Otherwise ask GitHub (reachable where the OS speaks modern TLS). */
+    /* 2) Otherwise ask GitHub (Windows only: the release assets are Windows
+     * binaries; a POSIX build updates from source). */
+#ifdef _WIN32
     if (!cand) {
         int got[3];
         cand = github_fetch_update(u, cur, got);
         if (cand) memcpy(best, got, sizeof got);
     }
+#endif
     if (!cand) {
         ui_style(u, CR_MUTED);
 #ifdef _WIN32
@@ -1292,22 +1307,120 @@ static int list_gguf(const char *dir, char ***out) {
     return n;
 }
 
-/* List the models found nearby and let the user pick one by number (or type a path).
- * Returns a malloc'd path, or NULL if the user entered nothing / EOF. Reads a plain line
- * (callers use this only where stdin is in cooked mode). */
-static char *pick_model(void) {
+/* Should this catalog id be offered as a chat model? Filters out the modality
+ * variants (tts/image/audio/embedding/...) that can't drive the agent loop. */
+static int api_model_is_chat(const char *id) {
+    static const char *const skip[] = { "embedding", "tts", "image", "audio",
+                                        "imagen", "veo", "live", "lyria",
+                                        "banana", "robotics", NULL };
+    for (int i = 0; skip[i]; i++)
+        if (strstr(id, skip[i])) return 0;
+    return 1;
+}
+
+/* Ask the CURRENT provider which models the configured key can use ("data":[{"id"}]
+ * on every OpenAI-style catalog, Anthropic's /v1/models included). Only meaningful
+ * when the current spec is an API one — that's what says whose catalog to ask.
+ * Fills *out with malloc'd "provider:id" specs; returns the count (0 on any miss:
+ * a picker that can't list is not an error). */
+static int list_api_models(const char *cur_spec, char ***out) {
+    *out = NULL;
+    const char *prefix, *default_base;
+    int anthropic = 0;
+    if (cur_spec && strncmp(cur_spec, "gemini:", 7) == 0) {
+        prefix = "gemini:";
+        default_base = "https://generativelanguage.googleapis.com/v1beta/openai";
+    } else if (cur_spec && strncmp(cur_spec, "openai:", 7) == 0) {
+        prefix = "openai:";
+        default_base = "https://api.openai.com";
+    } else if (cur_spec && strncmp(cur_spec, "anthropic:", 10) == 0) {
+        prefix = "anthropic:";
+        default_base = "https://api.anthropic.com";
+        anthropic = 1;
+    } else {
+        return 0;
+    }
+    const char *base = getenv("ANACHRON_API_URL");
+    if (!base || !*base) base = default_base;
+    size_t blen = strlen(base);
+    while (blen > 0 && base[blen - 1] == '/') blen--;
+    const char *scheme_end = strstr(base, "://");
+    const char *first_slash = scheme_end ? strchr(scheme_end + 3, '/') : NULL;
+    int has_path = first_slash && (size_t)(first_slash - base) < blen;
+    strbuf url; sb_init(&url);
+    sb_append_n(&url, base, blen);
+    sb_append(&url, has_path ? "/models" : "/v1/models");
+
+    strbuf hdrs; sb_init(&hdrs);
+    const char *key = getenv("ANACHRON_API_KEY");
+    if (key && *key) {
+        if (anthropic)
+            sb_appendf(&hdrs, "x-api-key: %s\r\nanthropic-version: 2023-06-01\r\n", key);
+        else
+            sb_appendf(&hdrs, "Authorization: Bearer %s\r\n", key);
+    }
+
+    char err[160];
+    char *resp = NULL; size_t rlen = 0; int status = 0;
+    int hr = plat_http_get(sb_cstr(&url), hdrs.len ? sb_cstr(&hdrs) : NULL,
+                           &resp, &rlen, &status, err, sizeof err);
+    sb_free(&url);
+    sb_free(&hdrs);
+    if (hr != 0 || status != 200) {
+        free(resp);
+        return 0;
+    }
+    json_value *jv = json_parse(resp, NULL);
+    free(resp);
+    if (!jv) return 0;
+    const json_value *data = json_obj_get(jv, "data");
+    char **v = NULL; int n = 0;
+    if (data && data->type == JSON_ARRAY) {
+        for (size_t i = 0; i < data->count && n < 24; i++) {
+            const char *id = json_as_str(json_obj_get(data->items[i], "id"));
+            if (!id || !*id) continue;
+            if (strncmp(id, "models/", 7) == 0) id += 7;   /* Gemini's native prefix */
+            if (!api_model_is_chat(id)) continue;
+            char **nv = realloc(v, (size_t)(n + 1) * sizeof *v);
+            if (!nv) break;
+            v = nv;
+            strbuf s; sb_init(&s);
+            sb_appendf(&s, "%s%s", prefix, id);
+            v[n++] = xstrdup(sb_cstr(&s));
+            sb_free(&s);
+        }
+    }
+    json_free(jv);
+    if (n > 1) qsort(v, (size_t)n, sizeof *v, cmp_cstr);
+    *out = v;
+    return n;
+}
+
+/* List the models found nearby — local .gguf files plus, when the current backend
+ * is an API, that provider's catalog — and let the user pick one by number (or
+ * type any spec). Returns a malloc'd spec, or NULL if nothing was entered. Reads
+ * a plain line (callers use this only where stdin is in cooked mode). */
+static char *pick_model(const char *cur_spec) {
     const char *dir = model_dir();
     const char *where = strcmp(dir, ".") == 0 ? "this folder" : dir;
     char **v; int n = list_gguf(dir, &v);
+    char **av; int an = list_api_models(cur_spec, &av);
     if (n > 0) {
         fprintf(stdout, "Models found in %s:\n", where);
         for (int i = 0; i < n; i++) fprintf(stdout, "  %d) %s\n", i + 1, v[i]);
+    }
+    if (an > 0) {
+        fprintf(stdout, "Models your API key can use:\n");
+        for (int i = 0; i < an; i++) fprintf(stdout, "  %d) %s\n", n + i + 1, av[i]);
+    }
+    if (n > 0 || an > 0) {
         fputs("Choose a number, or type a .gguf path / http://server:port / "
               "anthropic:<model> / gemini:<model> / openai:<model>: ", stdout);
     } else {
         fprintf(stdout, "No .gguf models found in %s.\n"
                         "Type a .gguf path, a llama-server URL (http://host:8080), or an\n"
-                        "API model (anthropic:claude-opus-4-8 / openai:<model>): ", where);
+                        "API model (anthropic:claude-opus-4-8 / gemini:<model> / "
+                        "openai:<model>): ", where);
     }
     fflush(stdout);
     char buf[512]; char *pick = NULL;
@@ -1315,11 +1428,15 @@ static char *pick_model(void) {
         chomp(buf);
         if (buf[0]) {
             char *end; long k = strtol(buf, &end, 10);
-            pick = (n > 0 && *end == '\0' && k >= 1 && k <= n) ? xstrdup(v[k - 1]) : xstrdup(buf);
+            if (*end == '\0' && k >= 1 && k <= n)                pick = xstrdup(v[k - 1]);
+            else if (*end == '\0' && k > n && k <= n + an)       pick = xstrdup(av[k - n - 1]);
+            else                                                 pick = xstrdup(buf);
         }
     }
     for (int i = 0; i < n; i++) free(v[i]);
     free(v);
+    for (int i = 0; i < an; i++) free(av[i]);
+    free(av);
     return pick;
 }
 
@@ -1335,6 +1452,7 @@ static int spec_networked(const char *m) {
  * NULL means the stub backend. */
 static void ui_set_model(ui *u, const char *path) {
     const char *b = path ? path : "stub";
+    snprintf(u->model_spec, sizeof u->model_spec, "%s", b);
     size_t n;
     if (strncmp(b, "http://", 7) == 0 || strncmp(b, "https://", 8) == 0) {
         b = strstr(b, "://") + 3;                       /* show host:port */
@@ -1442,7 +1560,7 @@ static cmd_result handle_command(const char *line, agent_session *s,
 
     if (strcmp(verb, "/model") == 0) {
         /* With a path, switch to it; with no arg, list the models nearby and pick one. */
-        char *chosen = arg[0] ? xstrdup(arg) : pick_model();
+        char *chosen = arg[0] ? xstrdup(arg) : pick_model(u->model_spec);
         if (!chosen) return CMD_HANDLED;   /* nothing chosen */
         infer_ctx *nb = infer_init(chosen, ctx_tokens);
         if (!nb) {
@@ -1664,7 +1782,7 @@ static int run_setup(char **model_out, char **sandbox_out, int *lean_out) {
 
     char *model = NULL;
     for (;;) {
-        char *p = pick_model();                       /* lists nearby .gguf, or asks for a path */
+        char *p = pick_model(NULL);                   /* lists nearby .gguf, or asks for a path */
         if (!p) return 0;                             /* nothing entered / EOF -> cancel */
         if (spec_networked(p)) { model = p; break; }  /* server/API specs aren't files */
         FILE *t = fopen(p, "rb");

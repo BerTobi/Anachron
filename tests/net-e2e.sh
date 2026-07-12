@@ -51,6 +51,14 @@ echo "$OUT" | grep -q 'Wrote net.txt over the wire' || { echo "FAIL(gemini): $OU
 grep -q 'hello from the network backend' "$TMP/sb/net.txt" || { echo "FAIL(gemini): no file"; exit 1; }
 echo "ok: gemini alias (path-carrying base URL)"
 
+# 5) /model lists the provider's catalog (filtered to chat models)
+OUT=$(printf '/model\n\n/quit\n' | ANACHRON_API_URL="http://127.0.0.1:$PORT" ANACHRON_API_KEY="g-test" \
+      ./anachron --model "gemini:gemini-x" --sandbox "$TMP/sb" 2>&1)
+echo "$OUT" | grep -q 'gemini:fake-big'  || { echo "FAIL(/model): catalog not listed"; echo "$OUT" | tail -6; exit 1; }
+echo "$OUT" | grep -q 'gemini:fake-lite' || { echo "FAIL(/model): catalog incomplete"; exit 1; }
+echo "$OUT" | grep -q 'fake-embedding' && { echo "FAIL(/model): embedding model not filtered"; exit 1; }
+echo "ok: /model lists the API catalog (embeddings filtered)"
+
 # Wire assertions from the server's request log
 python3 - "$TMP/requests.log" <<'EOF'
 import json, sys

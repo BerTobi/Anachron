@@ -178,17 +178,20 @@ int plat_move_file(const char *from, const char *to) {
 /* HTTP(S) GET through WinINet (XP-safe: all of these exist since IE3). Whether a
  * modern https host is REACHABLE depends on the OS's Schannel patch level — stock
  * XP SP3 tops out at TLS 1.0, so github.com refuses it; POSReady-patched systems
- * can succeed. Callers must treat failure as normal and fall back. */
-int plat_http_get(const char *url, char **body, size_t *body_len,
+ * can succeed. Callers must treat failure as normal and fall back. Returns 0 on
+ * ANY HTTP response (*status carries the code, even 4xx). */
+int plat_http_get(const char *url, const char *headers,
+                  char **resp, size_t *resp_len, int *status,
                   char *errbuf, size_t errsz) {
     if (errbuf && errsz) errbuf[0] = '\0';
-    HINTERNET net = InternetOpenA("anachron-updater",
+    HINTERNET net = InternetOpenA("anachron",
                                   INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
     if (!net) {
         if (errbuf) snprintf(errbuf, errsz, "InternetOpen failed (err %lu)", GetLastError());
         return -1;
     }
-    HINTERNET req = InternetOpenUrlA(net, url, NULL, 0,
+    HINTERNET req = InternetOpenUrlA(net, url, headers,
+                                     headers ? (DWORD)strlen(headers) : 0,
                                      INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE |
                                      INTERNET_FLAG_NO_UI, 0);
     if (!req) {
@@ -197,14 +200,15 @@ int plat_http_get(const char *url, char **body, size_t *body_len,
         InternetCloseHandle(net);
         return -1;
     }
-    DWORD status = 0, slen = sizeof status;
-    if (HttpQueryInfoA(req, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
-                       &status, &slen, NULL) && status != 200) {
-        if (errbuf) snprintf(errbuf, errsz, "HTTP %lu", status);
+    DWORD st = 0, slen = sizeof st;
+    if (!HttpQueryInfoA(req, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+                        &st, &slen, NULL)) {
+        if (errbuf) snprintf(errbuf, errsz, "no HTTP status (err %lu)", GetLastError());
         InternetCloseHandle(req);
         InternetCloseHandle(net);
         return -1;
     }
+    *status = (int)st;
     strbuf acc; sb_init(&acc);
     char chunk[8192];
     DWORD got = 0;
@@ -212,9 +216,9 @@ int plat_http_get(const char *url, char **body, size_t *body_len,
         sb_append_n(&acc, chunk, (size_t)got);
     InternetCloseHandle(req);
     InternetCloseHandle(net);
-    *body = xmalloc(acc.len + 1);
-    memcpy(*body, sb_cstr(&acc), acc.len + 1);
-    *body_len = acc.len;
+    *resp = xmalloc(acc.len + 1);
+    memcpy(*resp, sb_cstr(&acc), acc.len + 1);
+    *resp_len = acc.len;
     sb_free(&acc);
     return 0;
 }

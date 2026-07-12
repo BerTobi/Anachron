@@ -33,6 +33,25 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def do_GET(self):
+        # model catalogs (OpenAI shape; Anthropic's /v1/models matches too).
+        # fake-embedding-1 must be filtered out by the picker.
+        if self.path in ("/v1/models", "/models",
+                         "/v1beta/openai/models"):
+            out = json.dumps({"data": [
+                {"id": "fake-big"},
+                {"id": "fake-lite"},
+                {"id": "fake-embedding-1"},
+            ]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
     def do_POST(self):
         n = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(n).decode("utf-8", "replace")
