@@ -40,3 +40,4 @@ spike-phase0/llama.cpp/
 # Local config carries the API key - never commit it
 /agent.json
 /.anachron.json
+/work/
