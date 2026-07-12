@@ -1,6 +1,7 @@
 #!/bin/sh
 # Launch the ANACHRON agent with sensible defaults.
 # Usage:  ./run.sh               interactive conversation (0.5B Qwen-Coder, fast)
+#         ./run.sh --api         whatever agent.json says (currently gemini flash-lite)
 #         ./run.sh --hammer      Hammer 2.0 0.5B function-calling fine-tune (best tool use)
 #         ./run.sh --hammer-big  Hammer 2.0 1.5B (reliable tool use, better code, slow)
 #         ./run.sh --hammer21-big Hammer 2.1 1.5B (works, but very slow ~11 min/turn)
@@ -29,6 +30,7 @@ MODEL_HAMMER21_BIG=spike-phase0/models/hammer2.1-1.5b-q8_0.gguf
 #   --big/-b        -> 1.5B Qwen-Coder (better pure code, slower).
 MODEL=${ANACHRON_MODEL:-$MODEL_SMALL}
 case "$1" in
+    --api|-a)         MODEL="";                                       shift ;;
     --big|-b)         MODEL=${ANACHRON_MODEL:-$MODEL_BIG};            shift ;;
     --hammer|-H)      MODEL=${ANACHRON_MODEL:-$MODEL_HAMMER};         shift ;;
     --hammer-big)     MODEL=${ANACHRON_MODEL:-$MODEL_HAMMER_BIG};     shift ;;
@@ -41,6 +43,11 @@ SANDBOX=${ANACHRON_SANDBOX:-./workspace}
 [ -x ./anachron-llama ] || make llama
 
 mkdir -p "$SANDBOX"
-echo "model:   $MODEL"
+echo "model:   ${MODEL:-(from agent.json)}"
 echo "sandbox: $SANDBOX  (the agent can only touch files here)"
-exec ./anachron-llama --model "$MODEL" --sandbox "$SANDBOX" "$@"
+# --api passes no --model, so agent.json decides (model + api_key live there).
+if [ -n "$MODEL" ]; then
+    exec ./anachron-llama --model "$MODEL" --sandbox "$SANDBOX" "$@"
+else
+    exec ./anachron-llama --sandbox "$SANDBOX" "$@"
+fi
