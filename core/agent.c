@@ -225,9 +225,11 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
 
         /* Chat-API backends want the structured conversation, not the rendered
          * ChatML string. Hand them the live history + system text; local and
-         * remote-llama backends ignore this. Valid through the generate below. */
+         * remote-llama backends ignore this. Valid through the generate below.
+         * Always the FULL system prompt here: lean exists to cut slow local
+         * prefill, a cost hosted APIs don't have — they get the whole contract. */
         strbuf sys_text; sb_init(&sys_text);
-        prompt_render_system(&sys_text, cfg->plan_enabled, cfg->project_context, cfg->lean);
+        prompt_render_system(&sys_text, cfg->plan_enabled, cfg->project_context, /*lean*/ 0);
         infer_set_chat(cfg->infer, h, sb_cstr(&sys_text));
 
         /* Mode-gate: once a plan is recorded, switch to the plan-free grammar so the
