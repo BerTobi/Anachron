@@ -65,12 +65,15 @@ int toolcall_parse(const char *text, tool_call *out) {
     if (!root) return fail(out, err ? err : "tool-call JSON did not parse");
 
     const char *name = json_as_str(json_obj_get(root, "name"));
-    const json_value *args = json_obj_get(root, "arguments");
     if (!name) { json_free(root); return fail(out, "tool call missing string \"name\""); }
-    if (!args || args->type != JSON_OBJECT) {
-        json_free(root);
-        return fail(out, "tool call missing \"arguments\" object");
-    }
+    /* Models flatten this in the wild: {"name": "write_file", "path": ...} with
+     * the arguments hoisted to the top level (Gemini flash does it persistently,
+     * even when told the error). The intent is unambiguous — accept it: use the
+     * root object as the argument container. Also accept the common
+     * "parameters" alias for "arguments". */
+    const json_value *args = json_obj_get(root, "arguments");
+    if (!args || args->type != JSON_OBJECT) args = json_obj_get(root, "parameters");
+    if (!args || args->type != JSON_OBJECT) args = root;
 
     int ok = 0;
     if (strcmp(name, "read_file") == 0) {

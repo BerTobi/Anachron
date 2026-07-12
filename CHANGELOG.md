@@ -7,6 +7,28 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-07-12
+
+### Fixed
+- **`/model` switching to an API model no longer compacts history it doesn't
+  need to.** The relaxed 32k-token history budget that hosted/remote backends
+  get at launch now also applies when you *switch* to one mid-session (and the
+  real local window is restored when you switch back). Previously a session
+  started on a local model kept the 4096-token budget after switching, so one
+  decent-sized file write triggered spurious "context is filling up" compaction
+  on backends with room to spare. An explicit `--ctx` is still respected.
+- **Flattened tool calls are accepted.** Some API models (Gemini flash,
+  persistently) emit `{"name": "write_file", "path": ..., "content": ...}`
+  with the arguments hoisted beside `"name"` instead of nested under
+  `"arguments"`. The intent is unambiguous, so the parser now takes the
+  top-level keys as the arguments (and accepts the common `"parameters"`
+  alias) instead of erroring three times and derailing the turn.
+- **The `<tool_call>` JSON no longer leaks into plain-text replies.** When a
+  model closes a prose reply with a tool call (frontier-model style: summary
+  paragraph, then `final`), the streamed transcript now shows the prose and
+  suppresses the protocol tag onward; text that genuinely ends mid-"<tool" is
+  still shown.
+
 ## [0.8.2] - 2026-07-12
 
 ### Fixed

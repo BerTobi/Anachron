@@ -84,6 +84,7 @@ typedef struct {
     int  sr_bol;         /* at beginning of a line (drives indentation) */
     int  sr_began;       /* emitted anything this generation (drives the leading blank line) */
     int  sr_flush;       /* emitted whitespace: flush at the end of this piece (word pacing) */
+    int  sr_tag_n;       /* PLAIN: chars currently matching a "<tool_call>" prefix (held back) */
     int  turn_labeled;   /* printed the once-per-turn "anachron" gutter label */
     char model_name[96]; /* model display name (basename, no .gguf) for the status band */
     char model_spec[192];/* the full spec as given (path/URL/provider:model) — /model
@@ -246,6 +247,7 @@ static int win_ends(const char *w, int n, const char *needle) {
 static void ui_stream_reset(ui *u) {
     u->sr = SR_DECIDE; u->sr_acc_n = 0; u->sr_win_n = 0;
     u->sr_esc = 0; u->sr_bol = 1; u->sr_began = 0; u->sr_flush = 0;
+    u->sr_tag_n = 0;
 }
 
 static void ui_iter_start(int iter, void *ud) { (void)iter; ui_stream_reset((ui *)ud); }
@@ -278,9 +280,26 @@ static void ui_token(const char *piece, void *ud) {
                 for (int i = 0; i < u->sr_acc_n; i++) sr_emit(u, u->sr_acc[i]);
             }
             break;
-        case SR_PLAIN:
-            sr_emit(u, (char)c);
+        case SR_PLAIN: {
+            /* Frontier models often close a plain reply with the <tool_call>
+             * JSON (e.g. `final`); the tag onward is protocol, not prose —
+             * suppress it. A rolling prefix match holds back potential tag
+             * chars; the held run is flushed the moment the match breaks. */
+            static const char TAG[] = "<tool_call>";
+            if ((char)c == TAG[u->sr_tag_n]) {
+                u->sr_tag_n++;
+                if (TAG[u->sr_tag_n] == '\0') {   /* full tag: rest is JSON */
+                    u->sr_tag_n = 0;
+                    u->sr = SR_AFTER;
+                }
+            } else {
+                for (int t = 0; t < u->sr_tag_n; t++) sr_emit(u, TAG[t]);
+                u->sr_tag_n = 0;
+                if ((char)c == TAG[0]) u->sr_tag_n = 1;
+                else sr_emit(u, (char)c);
+            }
             break;
+        }
         case SR_TOOL: {
             int W = (int)sizeof u->sr_win;
             if (u->sr_win_n < W) u->sr_win[u->sr_win_n++] = (char)c;
@@ -319,6 +338,11 @@ static void ui_message(const char *text, void *ud) {
     (void)text;
     if (u->sr == SR_DECIDE)
         for (int i = 0; i < u->sr_acc_n; i++) sr_emit(u, u->sr_acc[i]);
+    if (u->sr == SR_PLAIN && u->sr_tag_n) {   /* text genuinely ended mid-"<tool_call" */
+        static const char TAG[] = "<tool_call>";
+        for (int t = 0; t < u->sr_tag_n; t++) sr_emit(u, TAG[t]);
+        u->sr_tag_n = 0;
+    }
     fputc('\n', u->out);
     fflush(u->out);
 }
@@ -1537,7 +1561,8 @@ static void help_row(ui *u, const char *cmd, const char *desc) {
  * a recognized command and should be sent to the model verbatim. `backend_slot`
  * and `ctx_tokens` let /model swap the inference backend in place. */
 static cmd_result handle_command(const char *line, agent_session *s,
-                                 char **sandbox_p, int sandbox_auto, int ctx_tokens,
+                                 char **sandbox_p, int sandbox_auto,
+                                 int ctx_tokens, int ctx_explicit,
                                  infer_ctx **backend_slot,
                                  const session_stats *stats, ui *u) {
     const char *sandbox = *sandbox_p;
@@ -1616,6 +1641,12 @@ static cmd_result handle_command(const char *line, agent_session *s,
         s->cfg.infer = nb;          /* run_turn reads the backend from the session's cfg */
         ui_set_model(u, chosen);    /* keep the status band's name in step */
         u->ctx_total = spec_networked(chosen) ? 0 : ctx_tokens;  /* server ctx unknown: hide % */
+        /* The HISTORY budget follows the backend: a hosted/remote model isn't
+         * bound by the local 4096-token window, so don't compact as if it were
+         * (and restore the real window when switching back to a local model). */
+        s->cfg.ctx_tokens = ctx_tokens;
+        if (spec_networked(chosen) && !ctx_explicit && ctx_tokens < 32768)
+            s->cfg.ctx_tokens = 32768;
         fprintf(stdout, "switched to model %s\n", chosen);
         free(chosen);
         return CMD_HANDLED;
@@ -2205,7 +2236,8 @@ int main(int argc, char **argv) {
                 continue;
             }
             cmd_result cr = handle_command(sb_cstr(&task), &session, &sandbox_live,
-                                           sandbox_auto, ctx, &backend, &stats, &u);
+                                           sandbox_auto, ctx, ctx_explicit,
+                                           &backend, &stats, &u);
             if (cr == CMD_QUIT) break;
             if (cr == CMD_HANDLED) continue;
             char *msg = expand_mentions(sb_cstr(&task), sandbox_live);

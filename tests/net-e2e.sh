@@ -66,6 +66,22 @@ OUT=$(printf '/model\n\n/quit\n' | ANACHRON_API_URL="http://127.0.0.1:$PORT" \
 echo "$OUT" | grep -q 'openai:fake-big' || { echo "FAIL(/model fallback): catalog not listed from local backend"; exit 1; }
 echo "ok: /model catalog fallback while a local backend runs"
 
+# 6) the history budget follows the backend on a /model switch: starting on the
+#    LOCAL backend (4096-token budget) and switching to an API model must not
+#    compact history that the hosted model has plenty of room for
+OUT=$(printf '/model\nopenai:test-model\nbigwrite\n/quit\n' | ANACHRON_API_URL="http://127.0.0.1:$PORT" \
+      ./anachron --sandbox "$TMP/sb" 2>&1)
+echo "$OUT" | grep -q 'Wrote big.txt over the wire' || { echo "FAIL(budget): big turn broke"; echo "$OUT" | tail -4; exit 1; }
+echo "$OUT" | grep -q 'context is filling up' && { echo "FAIL(budget): compacted under a 32k budget"; exit 1; }
+echo "ok: /model switch to an API raises the history budget"
+
+# 6b) ...but an explicit --ctx is respected across the switch (control: the same
+#     big turn under a forced 4096 budget must compact)
+OUT=$(printf '/model\nopenai:test-model\nbigwrite\n/quit\n' | ANACHRON_API_URL="http://127.0.0.1:$PORT" \
+      ./anachron --ctx 4096 --sandbox "$TMP/sb" 2>&1)
+echo "$OUT" | grep -q 'context is filling up' || { echo "FAIL(budget): explicit --ctx 4096 not respected"; exit 1; }
+echo "ok: explicit --ctx survives the switch (compaction control)"
+
 # Wire assertions from the server's request log
 python3 - "$TMP/requests.log" <<'EOF'
 import json, sys

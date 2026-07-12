@@ -24,6 +24,19 @@ SCRIPT = [
     "\"Wrote net.txt over the wire.\"}}</tool_call>",
 ]
 
+# A task containing "bigwrite" gets this script instead: one big write_file
+# (~14 KB of content, enough to overflow a 4096-token history budget but not a
+# 32768 one) then final. Exercises the history-budget-follows-the-backend fix.
+BIG_SCRIPT = [
+    "<tool_call>" + json.dumps({
+        "name": "write_file",
+        "arguments": {"path": "big.txt",
+                      "content": "a reasonably long line of filler text\n" * 370},
+    }) + "</tool_call>",
+    "<tool_call>{\"name\": \"final\", \"arguments\": {\"message\": "
+    "\"Wrote big.txt over the wire.\"}}</tool_call>",
+]
+
 PORT = int(sys.argv[1])
 LOGDIR = sys.argv[2]
 cursors = {}
@@ -55,9 +68,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(n).decode("utf-8", "replace")
-        idx = cursors.get(self.path, 0)
-        cursors[self.path] = idx + 1
-        text = SCRIPT[idx] if idx < len(SCRIPT) else SCRIPT[-1]
+        big = "bigwrite" in body
+        script = BIG_SCRIPT if big else SCRIPT
+        key = (self.path, big)
+        if big and "tool_response" not in body:
+            cursors[key] = 0   # first request of a fresh session: restart the script
+        idx = cursors.get(key, 0)
+        cursors[key] = idx + 1
+        text = script[idx] if idx < len(script) else script[-1]
 
         with open(f"{LOGDIR}/requests.log", "a") as f:
             f.write(json.dumps({

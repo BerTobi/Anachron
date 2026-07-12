@@ -1,0 +1,2 @@
+I have finished the requested work and everything compiles and runs cleanly on this machine.
+<tool_call>{"name": "final", "arguments": {"message": "All done."}}</tool_call>

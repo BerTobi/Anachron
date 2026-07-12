@@ -85,6 +85,20 @@ static void test_toolcall(void) {
     assert(rc == 0 && tc.kind == TC_LIST_DIR && strcmp(tc.path, ".") == 0);
     toolcall_free(&tc);
 
+    /* flattened arguments (Gemini flash does this persistently): the argument
+     * keys hoisted to the top level beside "name" */
+    rc = toolcall_parse("<tool_call>{\"name\":\"write_file\",\"path\":\"t.c\","
+                        "\"content\":\"int x;\\n\"}</tool_call>", &tc);
+    assert(rc == 0 && tc.kind == TC_WRITE_FILE);
+    assert(strcmp(tc.path, "t.c") == 0 && strcmp(tc.content, "int x;\n") == 0);
+    toolcall_free(&tc);
+
+    /* "parameters" alias for "arguments" */
+    rc = toolcall_parse("<tool_call>{\"name\":\"run_command\",\"parameters\":"
+                        "{\"cmd\":\"ls\"}}</tool_call>", &tc);
+    assert(rc == 0 && tc.kind == TC_RUN_COMMAND && strcmp(tc.cmd, "ls") == 0);
+    toolcall_free(&tc);
+
     printf("  toolcall: ok\n");
 }
 
