@@ -7,6 +7,19 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-07-12
+
+### Fixed
+- **The `ctx N%` tracker is back on the status band for API/remote sessions.**
+  v0.7.0 hid it on networked backends because the server's window is unknown —
+  which removed the tracker exactly where turns cost money. It now tracks the
+  thing that actually matters operationally: how full the harness's HISTORY
+  BUDGET is (the point where compaction starts — 32k tokens on hosted/remote
+  backends, the real window locally), using the exact prompt token counts the
+  APIs report. Same amber-at-80% / hint-at-90% behavior everywhere. On a LAN
+  llama-server with prompt caching the reported count covers only the uncached
+  tail, so the % can read low between turns there.
+
 ## [0.8.3] - 2026-07-12
 
 ### Fixed

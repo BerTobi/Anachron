@@ -471,10 +471,11 @@ static void fmt_dur(char *buf, size_t n, double secs) {
 }
 
 /* End-of-turn status band: one muted line with the model, how full the context
- * window is, tokens generated, and wall time. The ctx figure is the final prompt of
- * the turn as a share of the window; it turns amber at 80% and earns a hint at 90%,
- * because a 4096-token window fills sooner than it feels. Middle-dot separators on
- * a terminal that renders them, ASCII pipes on the XP console. */
+ * is, tokens generated, and wall time. The ctx figure is the final prompt of the
+ * turn as a share of the HISTORY BUDGET (the local window, or the 32k compaction
+ * budget on hosted/remote backends); it turns amber at 80% and earns a hint at
+ * 90%, because a 4096-token window fills sooner than it feels. Middle-dot
+ * separators on a terminal that renders them, ASCII pipes on the XP console. */
 static void print_turn_stats(ui *u, double secs, const agent_session *s) {
     int fancy = u->color && u->unicode;
     const char *sep  = fancy ? " \xc2\xb7 " : " | ";          /* " · " */
@@ -1640,13 +1641,13 @@ static cmd_result handle_command(const char *line, agent_session *s,
         *backend_slot = nb;
         s->cfg.infer = nb;          /* run_turn reads the backend from the session's cfg */
         ui_set_model(u, chosen);    /* keep the status band's name in step */
-        u->ctx_total = spec_networked(chosen) ? 0 : ctx_tokens;  /* server ctx unknown: hide % */
         /* The HISTORY budget follows the backend: a hosted/remote model isn't
          * bound by the local 4096-token window, so don't compact as if it were
          * (and restore the real window when switching back to a local model). */
         s->cfg.ctx_tokens = ctx_tokens;
         if (spec_networked(chosen) && !ctx_explicit && ctx_tokens < 32768)
             s->cfg.ctx_tokens = 32768;
+        u->ctx_total = s->cfg.ctx_tokens;   /* band tracks % of the history budget */
         fprintf(stdout, "switched to model %s\n", chosen);
         free(chosen);
         return CMD_HANDLED;
@@ -2129,7 +2130,12 @@ int main(int argc, char **argv) {
     ui_console_init(&u);   /* capture console attrs (Win32); set unicode capability */
     u.yolo = yolo;
     ui_set_model(&u, model);   /* status-band display name ("stub" when no model) */
-    u.ctx_total = spec_networked(model) ? 0 : ctx;   /* server/API ctx unknown: hide the % */
+    u.ctx_total = ctx;   /* the band tracks how full the HISTORY BUDGET is; for a
+                          * hosted/remote model that's the 32k harness budget (the
+                          * point where compaction starts), not the server's own
+                          * window. API usage reports exact prompt tokens; a LAN
+                          * llama-server with prompt caching reports only the
+                          * uncached tail, so the % can read low between turns. */
     agent_config cfg = {0};
     cfg.infer = backend;
     cfg.grammar = grammar;          /* stub ignores it; llama backend honors it */
