@@ -36,3 +36,7 @@ spike-phase0/llama.cpp/
 
 # Prompt-cache KV state files (per-model, regenerated on demand)
 *.anchkv
+
+# Local config carries the API key - never commit it
+/agent.json
+/.anachron.json
