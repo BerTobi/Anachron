@@ -1,0 +1,3 @@
+<tool_call>{"name": "agent", "arguments": {"tasks": ["report alpha", "report beta", "report gamma"]}}</tool_call>
+===
+<tool_call>{"name": "final", "arguments": {"message": "child report done"}}</tool_call>

@@ -40,6 +40,18 @@ echo "$OUT" | grep -q 'sub-agents cannot spawn sub-agents' || { echo "FAIL: dept
 echo "$OUT" | grep -q 'Depth respected' || { echo "FAIL: parent did not recover from depth refusal"; exit 1; }
 echo "ok: sub-agent depth capped at one level"
 
+# Parallel fan-out: {"tasks": [...]} spawns one `anachron -p` PROCESS per task
+# (no threads); every child's report comes back, scratch files are cleaned up.
+PAR=$(mktemp -d)
+OUT=$(ANACHRON_STUB_SCRIPT=tests/par-script.txt ./anachron --sandbox "$PAR" --yolo "fan out" 2>&1)
+for i in 1 2 3; do
+  echo "$OUT" | grep -q "=== Sub-agent $i of 3 ===" || { echo "FAIL: sub-agent $i missing"; exit 1; }
+done
+echo "$OUT" | grep -c 'child report done' | grep -q '^4$' || { echo "FAIL: expected 3 child reports + parent final"; exit 1; }
+test "$(ls "$PAR" | grep -c anachron-par)" = "0" || { echo "FAIL: scratch files left behind"; exit 1; }
+rm -rf "$PAR"
+echo "ok: parallel sub-agent processes (3 spawned, all reported, scratch cleaned)"
+
 # Session persistence: every turn auto-saves; --continue restores it in a new
 # process, and the harness state stays hidden from the model's list_dir.
 SESS=$(mktemp -d)

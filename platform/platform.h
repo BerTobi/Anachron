@@ -90,6 +90,17 @@ int  plat_http_post(const char *url, const char *headers,
                     char **resp, size_t *resp_len, int *status,
                     char *errbuf, size_t errsz);
 
+/* Spawn `cmd` through the system shell (redirections in the string work on
+ * both platforms) with `cwd` as working directory, WITHOUT waiting. Returns 0
+ * and sets *handle on success. Pair with plat_wait_all. No threads: children
+ * are separate processes, which is all the concurrency network-bound agent
+ * fan-out needs. */
+int  plat_spawn(const char *cmd, const char *cwd, void **handle);
+
+/* Wait for every spawned handle to exit; exit_codes[i] receives each child's
+ * exit status (-1 if it could not be determined). Frees the handles. */
+int  plat_wait_all(void **handles, size_t n, int *exit_codes);
+
 /* Capture the whole screen to a PNG at `path` (absolute). Windows: GDI BitBlt
  * (XP-safe) + the in-house PNG writer, downscaled by halves to <=1400px wide so
  * the base64 payload stays within vision-API limits. POSIX: delegates to the

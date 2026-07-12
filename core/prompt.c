@@ -264,8 +264,11 @@ static const char *VISION_ADDENDUM =
     "  same tools but a FRESH, separate context; you receive ONLY its final report.\n"
     "  Use it when the intermediate output would flood your context: \"summarize every\n"
     "  file in src/\", \"find where X is handled in this big log\". Give it ONE complete,\n"
-    "  standalone task (it cannot see this conversation); fan out several calls for\n"
-    "  several independent chunks.";
+    "  standalone task (it cannot see this conversation).\n"
+    "  PARALLEL form: {\"tasks\": [\"<task 1>\", \"<task 2>\", ...]} (max 8) runs them all\n"
+    "  CONCURRENTLY and returns every report at once - use it for independent chunks\n"
+    "  (per-file summaries, comparing several approaches). Tasks must not depend on\n"
+    "  each other or write the same files.";
 
 void prompt_render_system(strbuf *out, int plan_enabled, const char *project_context,
                           int lean, int vision) {

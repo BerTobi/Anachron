@@ -414,3 +414,38 @@ int plat_screenshot(const char *path, char *errbuf, size_t errsz) {
     free(rgb);
     return rc;
 }
+
+/* Process-level parallelism for sub-agent fan-out: cmd.exe /c parses the
+ * redirections in the command string, CreateProcess runs detached, and the
+ * handle is the process HANDLE. All XP-safe. */
+int plat_spawn(const char *cmd, const char *cwd, void **handle) {
+    strbuf full; sb_init(&full);
+    sb_appendf(&full, "cmd.exe /c %s", cmd);
+    STARTUPINFOA si; PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof si); si.cb = sizeof si;
+    memset(&pi, 0, sizeof pi);
+    char *line = xstrdup(sb_cstr(&full));   /* CreateProcess may scribble on it */
+    sb_free(&full);
+    BOOL ok = CreateProcessA(NULL, line, NULL, NULL, FALSE,
+                             CREATE_NO_WINDOW, NULL,
+                             (cwd && *cwd) ? cwd : NULL, &si, &pi);
+    free(line);
+    if (!ok) return -1;
+    CloseHandle(pi.hThread);
+    *handle = (void *)pi.hProcess;
+    return 0;
+}
+
+int plat_wait_all(void **handles, size_t n, int *exit_codes) {
+    for (size_t i = 0; i < n; i++) {
+        HANDLE h = (HANDLE)handles[i];
+        exit_codes[i] = -1;
+        if (!h) continue;
+        if (WaitForSingleObject(h, INFINITE) == WAIT_OBJECT_0) {
+            DWORD code = 0;
+            if (GetExitCodeProcess(h, &code)) exit_codes[i] = (int)code;
+        }
+        CloseHandle(h);
+    }
+    return 0;
+}

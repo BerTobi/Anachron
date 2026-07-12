@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -501,4 +502,34 @@ int plat_screenshot(const char *path, char *errbuf, size_t errsz) {
     snprintf(errbuf, errsz, "screenshot: no capture tool worked (need one of "
              "import/scrot/gnome-screenshot/spectacle/grim, and a display)");
     return -1;
+}
+
+/* Process-level parallelism for sub-agent fan-out: fork + /bin/sh -c, no wait.
+ * The handle is the pid boxed in a malloc'd int. */
+int plat_spawn(const char *cmd, const char *cwd, void **handle) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        if (cwd && *cwd && chdir(cwd) != 0) _exit(127);
+        execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+        _exit(127);
+    }
+    int *box = xmalloc(sizeof *box);
+    *box = (int)pid;
+    *handle = box;
+    return 0;
+}
+
+int plat_wait_all(void **handles, size_t n, int *exit_codes) {
+    for (size_t i = 0; i < n; i++) {
+        int *box = handles[i];
+        int st = 0;
+        exit_codes[i] = -1;
+        if (box) {
+            if (waitpid((pid_t)*box, &st, 0) == (pid_t)*box)
+                exit_codes[i] = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+            free(box);
+        }
+    }
+    return 0;
 }

@@ -56,6 +56,9 @@ BIGGER BRAINS: REMOTE INFERENCE AND HOSTED APIS
   THE MODEL CAN DELEGATE (hosted APIs only): an  agent  tool runs a sub-agent
   with the same tools but a fresh, separate context and reports back only its
   conclusion - so "summarize every file in src" does not flood the conversation.
+  It can even fan out up to 8 sub-agents AT ONCE (each is its own anachron
+  process quietly working in the background) - ask it to do independent chunks
+  "in parallel".
 
   THE MODEL CAN READ THE WEB (hosted APIs only): a  fetch  tool GETs a page or
   API and reads it as text (asks [y/N] first). Plain-http and LAN URLs work on

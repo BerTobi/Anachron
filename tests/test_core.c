@@ -106,6 +106,17 @@ static void test_toolcall(void) {
     assert(rc == 0 && tc.kind == TC_AGENT && strcmp(tc.task, "summarize src/") == 0);
     toolcall_free(&tc);
 
+    /* agent parallel form, including the nameless {"tasks": [...]} Gemini
+     * flash emits around arrays */
+    rc = toolcall_parse("<tool_call>{\"name\":\"agent\",\"arguments\":"
+                        "{\"tasks\":[\"a\",\"b\"]}}</tool_call>", &tc);
+    assert(rc == 0 && tc.kind == TC_AGENT && tc.ntasks == 2 &&
+           strcmp(tc.tasks[0], "a") == 0 && strcmp(tc.tasks[1], "b") == 0);
+    toolcall_free(&tc);
+    rc = toolcall_parse("<tool_call>{\"tasks\": [\"x\", \"y\", \"z\"]}</tool_call>", &tc);
+    assert(rc == 0 && tc.kind == TC_AGENT && tc.ntasks == 3);
+    toolcall_free(&tc);
+
     /* fetch */
     rc = toolcall_parse("<tool_call>{\"name\":\"fetch\",\"arguments\":"
                         "{\"url\":\"https://x.test/a\"}}</tool_call>", &tc);

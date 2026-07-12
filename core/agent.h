@@ -34,6 +34,8 @@ typedef struct {
     strbuf     *report_sink;     /* when set (sub-agents), the turn's final/plain reply is
                                     appended here in addition to the on_final/on_message
                                     callbacks (which a sub-agent leaves NULL). */
+    char        model_spec[192]; /* the running model spec, for spawning parallel
+                                    sub-agent PROCESSES (`anachron -p`); "" = default */
     int         diff_colour;     /* 1 = ANSI-colour the diff shown on edits */
     void      (*on_diff)(const char *diff, void *ud); /* nullable: diff shown on edit */
     /* nullable: successful write/edit accounting (added/removed lines) for /files */

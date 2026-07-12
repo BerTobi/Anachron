@@ -8,6 +8,7 @@
 #include "interrupt.h"
 
 #include <ctype.h>
+#include <stdio.h>   /* snprintf / remove for the parallel fan-out scratch files */
 #include <stdlib.h>
 #include <string.h>  /* strstr — without this it is implicitly declared and the
                         returned pointer is truncated to int on 64-bit (latent bug) */
@@ -177,6 +178,99 @@ int agent_session_load(agent_session *s, const char *path) {
     return 0;
 }
 
+/* Parallel sub-agent fan-out: one `anachron -p` child PROCESS per task, all
+ * concurrent, then one blocking wait. Tasks travel via stdin redirection (no
+ * shell-quoting of model text), reports come back on each child's stdout.
+ * Scratch files live in the shared sandbox under .anachron-par-* and are
+ * cleaned up afterwards. Returns a malloc'd combined observation. */
+#define PAR_REPORT_CAP 6000   /* chars of each child's report fed back */
+
+static char *sb_take(strbuf *b) {   /* dup the contents and free the buffer */
+    char *r = xstrdup(sb_cstr(b));
+    sb_free(b);
+    return r;
+}
+
+static void par_scratch(const agent_config *cfg, size_t i, const char *ext, char **abs) {
+    char rel[48];
+    snprintf(rel, sizeof rel, ".anachron-par-%lu.%s", (unsigned long)i, ext);
+    *abs = NULL;
+    sandbox_resolve(cfg->sandbox_root, rel, abs);
+}
+
+static char *agent_run_parallel(const agent_config *cfg, const tool_call *call) {
+    strbuf obs; sb_init(&obs);
+    char self[1024];
+    if (plat_self_path(self, sizeof self) != 0) {
+        sb_append(&obs, "ERROR: cannot locate the anachron binary to spawn sub-agents");
+        return sb_take(&obs);
+    }
+    size_t n = call->ntasks;
+    void *handles[AGENT_MAX_PAR] = {0};
+    int codes[AGENT_MAX_PAR];
+    size_t launched = 0;
+
+    for (size_t i = 0; i < n; i++) {
+        char *tin = NULL, *tout = NULL, *terr = NULL;
+        par_scratch(cfg, i, "task", &tin);
+        par_scratch(cfg, i, "out", &tout);
+        par_scratch(cfg, i, "err", &terr);
+        if (!tin || !tout || !terr ||
+            plat_write_file(tin, call->tasks[i], strlen(call->tasks[i])) != 0) {
+            free(tin); free(tout); free(terr);
+            break;
+        }
+        strbuf cmd; sb_init(&cmd);
+        sb_appendf(&cmd, "\"%s\" -p --depth %d --sandbox \"%s\" --ctx %d",
+                   self, cfg->depth + 1, cfg->sandbox_root, cfg->ctx_tokens);
+        if (cfg->model_spec[0])
+            sb_appendf(&cmd, " --model \"%s\"", cfg->model_spec);
+        sb_appendf(&cmd, " < \"%s\" > \"%s\" 2> \"%s\"", tin, tout, terr);
+        if (plat_spawn(sb_cstr(&cmd), NULL, &handles[launched]) == 0)
+            launched++;
+        sb_free(&cmd);
+        free(tin); free(tout); free(terr);
+        if (launched != i + 1) break;   /* spawn failed: stop fanning out */
+    }
+
+    if (launched > 0) plat_wait_all(handles, launched, codes);
+
+    for (size_t i = 0; i < n; i++) {
+        char *tin = NULL, *tout = NULL, *terr = NULL;
+        par_scratch(cfg, i, "task", &tin);
+        par_scratch(cfg, i, "out", &tout);
+        par_scratch(cfg, i, "err", &terr);
+        sb_appendf(&obs, "%s=== Sub-agent %lu of %lu ===\n",
+                   i ? "\n" : "", (unsigned long)(i + 1), (unsigned long)n);
+        if (i >= launched) {
+            sb_append(&obs, "(could not be started)\n");
+        } else {
+            char *rep = NULL; size_t rl = 0;
+            if (tout && plat_read_file(tout, &rep, &rl) == 0 && rl > 0) {
+                if (rl > PAR_REPORT_CAP) {
+                    sb_append_n(&obs, rep, PAR_REPORT_CAP);
+                    sb_append(&obs, "\n[... report truncated ...]\n");
+                } else sb_append(&obs, rep);
+            } else {
+                char *emsg = NULL; size_t el = 0;
+                sb_appendf(&obs, "(no report; exit code %d", codes[i]);
+                if (terr && plat_read_file(terr, &emsg, &el) == 0 && el > 0) {
+                    sb_append(&obs, ")\n");
+                    sb_append_n(&obs, emsg, el > 500 ? 500 : el);
+                } else sb_append(&obs, ")");
+                sb_putc(&obs, '\n');
+                free(emsg);
+            }
+            free(rep);
+        }
+        if (tin)  remove(tin);
+        if (tout) remove(tout);
+        if (terr) remove(terr);
+        free(tin); free(tout); free(terr);
+    }
+    return sb_take(&obs);
+}
+
 int agent_session_run_turn(agent_session *s, const char *user_msg) {
     const agent_config *cfg = &s->cfg;
     history *h = &s->h;
@@ -301,9 +395,10 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
                  * an invented tool name). Nudge it toward plain text or a real tool. */
                 NOTICE(cfg, call.error ? call.error : "invalid tool call");
                 history_push(h, MSG_TOOL_RESULT,
-                    "ERROR: that is not a valid tool call. The only tools are read_file, "
-                    "write_file, list_dir, run_command, final. To show code or an answer, "
-                    "reply in plain text with NO JSON. To save code to a file, use write_file.");
+                    "ERROR: that is not a valid tool call. Use ONLY the tools listed in "
+                    "the system prompt, in the exact form "
+                    "<tool_call>{\"name\": \"<tool>\", \"arguments\": { ... }}</tool_call>. "
+                    "To show code or an answer, reply in plain text with NO JSON.");
                 toolcall_free(&call);
                 sb_free(&acc);
                 continue;
@@ -393,7 +488,37 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
          * and feed back only its final report — the context-isolation trick
          * (summarize a folder without its contents flooding this conversation).
          * The child streams nothing but its tool calls still render and still
-         * hit the permission gate; depth is capped at one level. */
+         * hit the permission gate; depth is capped at one level.
+         * The PARALLEL form ({"tasks": [...]}) spawns child PROCESSES running
+         * `anachron -p` — network-bound children need no threads, just the OS
+         * scheduler — and gates once for the whole batch (children run
+         * non-interactive, so their own steps auto-approve). */
+        if (call.kind == TC_AGENT && (call.ntasks > 1 || (call.ntasks == 1 && !call.task))) {
+            if (cfg->on_tool_call) cfg->on_tool_call(&call, cfg->ud);
+            if (cfg->depth >= 1) {
+                const char *m = "ERROR: sub-agents cannot spawn sub-agents. Do the work "
+                                "directly with the other tools.";
+                if (cfg->on_tool_result) cfg->on_tool_result(m, 0, cfg->ud);
+                history_push(h, MSG_TOOL_RESULT, m);
+                toolcall_free(&call);
+                continue;
+            }
+            if (cfg->confirm_tool && !cfg->confirm_tool(&call, cfg->ud)) {
+                const char *m = "User declined the parallel sub-agents. Take a different "
+                                "approach, or call final to explain what you could not do.";
+                if (cfg->on_tool_result) cfg->on_tool_result("(declined by user)", 0, cfg->ud);
+                history_push(h, MSG_TOOL_RESULT, m);
+                toolcall_free(&call);
+                continue;
+            }
+            char *obs2 = agent_run_parallel(cfg, &call);
+            if (cfg->on_tool_result) cfg->on_tool_result(obs2, 1, cfg->ud);
+            log_kv(cfg, "result", obs2);
+            history_push(h, MSG_TOOL_RESULT, obs2);
+            free(obs2);
+            toolcall_free(&call);
+            continue;
+        }
         if (call.kind == TC_AGENT) {
             if (cfg->on_tool_call) cfg->on_tool_call(&call, cfg->ud);
             if (cfg->depth >= 1) {

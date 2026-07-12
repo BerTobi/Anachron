@@ -221,11 +221,15 @@ static int ui_confirm(const tool_call *c, void *ud) {
     ui *u = ud;
     if (u->yolo || !u->interactive) return 1;
     ui_style(u, CR_WARN);
-    fputs(c->kind == TC_RUN_COMMAND ? "  run this command? [y/N] "
-        : c->kind == TC_WRITE_FILE  ? "  write this file? [y/N] "
-        : c->kind == TC_SCREENSHOT  ? "  capture the screen? [y/N] "
-        : c->kind == TC_FETCH       ? "  fetch this URL? [y/N] "
-        :                             "  apply this edit? [y/N] ", u->out);
+    if (c->kind == TC_AGENT)
+        fprintf(u->out, "  run these %lu sub-agents in parallel? "
+                        "(their steps auto-approve) [y/N] ", (unsigned long)c->ntasks);
+    else
+        fputs(c->kind == TC_RUN_COMMAND ? "  run this command? [y/N] "
+            : c->kind == TC_WRITE_FILE  ? "  write this file? [y/N] "
+            : c->kind == TC_SCREENSHOT  ? "  capture the screen? [y/N] "
+            : c->kind == TC_FETCH       ? "  fetch this URL? [y/N] "
+            :                             "  apply this edit? [y/N] ", u->out);
     ui_reset(u);
     fflush(u->out);
 
@@ -374,8 +378,20 @@ static void ui_tool_call(const tool_call *c, void *ud) {
         case TC_GLOB:        fprintf(u->out, "> glob(%s)", c->pattern ? c->pattern : ""); break;
         case TC_SCREENSHOT:  fprintf(u->out, "> screenshot(%s)", c->path ? c->path : ""); break;
         case TC_FETCH:       fprintf(u->out, "> fetch(%s)", c->url ? c->url : ""); break;
-        case TC_AGENT:       fprintf(u->out, "> agent(%.60s%s)", c->task ? c->task : "",
-                                     c->task && strlen(c->task) > 60 ? "..." : ""); break;
+        case TC_AGENT:
+            if (c->ntasks > 0) {
+                fprintf(u->out, "> agent(%lu tasks in parallel)", (unsigned long)c->ntasks);
+                ui_reset(u);
+                for (size_t k = 0; k < c->ntasks; k++) {
+                    ui_style(u, CR_MUTED);
+                    fprintf(u->out, "\n    %lu. %.70s%s", (unsigned long)(k + 1),
+                            c->tasks[k], strlen(c->tasks[k]) > 70 ? "..." : "");
+                }
+            } else {
+                fprintf(u->out, "> agent(%.60s%s)", c->task ? c->task : "",
+                        c->task && strlen(c->task) > 60 ? "..." : "");
+            }
+            break;
         case TC_PLAN:        fputs("> plan:", u->out); ui_reset(u);
                              fprintf(u->out, "\n%s\n", c->plan ? c->plan : "");
                              fflush(u->out); return;
@@ -1677,6 +1693,7 @@ static cmd_result handle_command(const char *line, agent_session *s,
             s->cfg.ctx_tokens = 131072;
         u->ctx_total = s->cfg.ctx_tokens;   /* band tracks % of the history budget */
         s->cfg.vision = spec_vision(chosen);   /* offer/withdraw the screenshot tool */
+        snprintf(s->cfg.model_spec, sizeof s->cfg.model_spec, "%s", chosen);
         fprintf(stdout, "switched to model %s\n", chosen);
         free(chosen);
         return CMD_HANDLED;
@@ -1999,6 +2016,7 @@ int main(int argc, char **argv) {
                              ONLY the final answer on stdout (transcript suppressed) */
     int cont = 0;         /* -c/--continue: resume the previous conversation (auto-saved
                              each turn); with sandbox auto, re-enter the newest session dir */
+    int depth = 0;        /* --depth (internal): this process IS a spawned sub-agent */
     int lean = env_truthy("ANACHRON_LEAN");   /* terse prompt for a faster first turn */
 
     /* Config file (agent.json / .anachron.json) sets defaults; CLI flags below
@@ -2077,6 +2095,8 @@ int main(int argc, char **argv) {
             print_mode = 1;
         } else if (strcmp(a, "-c") == 0 || strcmp(a, "--continue") == 0) {
             cont = 1;
+        } else if (strcmp(a, "--depth") == 0 && i + 1 < argc) {
+            depth = atoi(argv[++i]);   /* internal: parallel sub-agent nesting level */
         } else if (strcmp(a, "--lean") == 0) {
             lean = 1;
         } else if (strcmp(a, "--log") == 0 && i + 1 < argc) {
@@ -2266,6 +2286,8 @@ int main(int argc, char **argv) {
     cfg.project_context = project_context;
     cfg.lean = lean;   /* terse prompt (--lean / ANACHRON_LEAN); faster first-turn prefill */
     cfg.vision = spec_vision(model);   /* hosted chat APIs can see screenshots */
+    cfg.depth = depth;                 /* spawned sub-agents must not fan out again */
+    if (model) snprintf(cfg.model_spec, sizeof cfg.model_spec, "%s", model);
     cfg.diff_colour = 0;   /* diff text stays plain; ui_diff() colours it per-line (both backends) */
     cfg.on_diff = ui_diff;
     cfg.on_file_change = ui_file_change;   /* /files session summary */
@@ -2317,7 +2339,9 @@ int main(int argc, char **argv) {
         u.turn_labeled = 0;
         rc = agent_session_run_turn(&session, msg);
         if (!print_mode) print_turn_stats(&u, plat_time_sec() - t0, &session);
-        session_autosave(sandbox, &session);
+        /* Spawned sub-agents share the sandbox: they must not clobber the
+         * conversation the user will want to --continue. */
+        if (depth == 0) session_autosave(sandbox, &session);
         free(msg);
     } else {
         /* The REPL owns a live sandbox pointer so /new can rotate it in auto mode. */

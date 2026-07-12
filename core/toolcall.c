@@ -32,6 +32,8 @@ void toolcall_free(tool_call *tc) {
     free(tc->cmd);
     free(tc->url);
     free(tc->task);
+    for (size_t i = 0; i < tc->ntasks; i++) free(tc->tasks[i]);
+    free(tc->tasks);
     free(tc->message);
     free(tc->plan);
     free(tc->error);
@@ -70,6 +72,10 @@ int toolcall_parse(const char *text, tool_call *out) {
     if (!root) return fail(out, err ? err : "tool-call JSON did not parse");
 
     const char *name = json_as_str(json_obj_get(root, "name"));
+    /* A bare {"tasks": [...]} with no name is unambiguously the agent tool's
+     * parallel form — Gemini flash drops the "name" key around arrays. */
+    const json_value *bare_tasks = json_obj_get(root, "tasks");
+    if (!name && bare_tasks && bare_tasks->type == JSON_ARRAY) name = "agent";
     if (!name) { json_free(root); return fail(out, "tool call missing string \"name\""); }
     /* Models flatten this in the wild: {"name": "write_file", "path": ...} with
      * the arguments hoisted to the top level (Gemini flash does it persistently,
@@ -122,7 +128,17 @@ int toolcall_parse(const char *text, tool_call *out) {
     } else if (strcmp(name, "agent") == 0) {
         out->kind = TC_AGENT;
         out->task = req_str(args, "task");
-        ok = out->task != NULL;
+        const json_value *ts = json_obj_get(args, "tasks");
+        if (ts && ts->type == JSON_ARRAY && ts->count > 0) {
+            size_t n = ts->count > AGENT_MAX_PAR ? AGENT_MAX_PAR : ts->count;
+            out->tasks = xmalloc(n * sizeof *out->tasks);
+            for (size_t i = 0; i < n; i++) {
+                const char *t = json_as_str(ts->items[i]);
+                out->tasks[out->ntasks] = t ? xstrdup(t) : NULL;
+                if (out->tasks[out->ntasks]) out->ntasks++;
+            }
+        }
+        ok = out->task != NULL || out->ntasks > 0;
     } else if (strcmp(name, "fetch") == 0) {
         out->kind = TC_FETCH;
         out->url = req_str(args, "url");

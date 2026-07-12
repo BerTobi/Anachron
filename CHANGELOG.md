@@ -7,6 +7,28 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-12
+
+### Added
+- **Parallel sub-agent fan-out — no threads required.** The `agent` tool now
+  takes `{"tasks": ["...", ...]}` (max 8) and runs them ALL AT ONCE, each as
+  its own `anachron -p` child process (`fork`+`sh` on POSIX,
+  `CreateProcess`+`WaitForMultipleObjects` on Windows/XP). Network-bound
+  children spend their lives waiting on the API, so the OS scheduler is all
+  the concurrency needed — the full clide trick, one binary. Tasks travel via
+  stdin redirection (no shell-quoting of model text), reports return on each
+  child's stdout, capped at 6 KB apiece. One `[y/N]` gate covers the batch
+  (children run non-interactive, so their steps auto-approve — the prompt
+  says so). Spawned children skip session auto-save and cannot fan out again.
+  Live: three C programs written, compiled, and verified concurrently by
+  Gemini flash-lite in 10 s wall — under the cost of two sequential children.
+
+### Fixed
+- A nameless `{"tasks": [...]}` tool call (Gemini flash drops the `"name"`
+  key around arrays) now parses as the agent tool instead of erroring.
+- The invalid-tool-call recovery message no longer lists a stale subset of
+  tools; it points at the system prompt's list.
+
 ## [0.12.0] - 2026-07-12
 
 ### Added

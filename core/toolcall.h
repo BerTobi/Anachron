@@ -7,6 +7,10 @@
 #ifndef ANACHRON_TOOLCALL_H
 #define ANACHRON_TOOLCALL_H
 
+#include <stddef.h>   /* size_t (the parallel tasks array) */
+
+#define AGENT_MAX_PAR 8   /* parallel sub-agent fan-out cap (processes, not threads) */
+
 typedef enum {
     TC_NONE = 0,     /* nothing parseable — caller should re-prompt */
     TC_READ_FILE,
@@ -31,7 +35,9 @@ typedef struct {
     char   *pattern;  /* search: text to grep; glob: filename wildcard */
     char   *cmd;      /* run_command */
     char   *url;      /* fetch */
-    char   *task;     /* agent: the sub-task description */
+    char   *task;     /* agent: the sub-task description (single form) */
+    char  **tasks;    /* agent: parallel form — up to AGENT_MAX_PAR sub-tasks */
+    size_t  ntasks;
     char   *message;  /* final */
     char   *plan;     /* plan (steps, newline-separated) */
     long    offset;   /* read_file: line offset for paging (0 if absent) */
