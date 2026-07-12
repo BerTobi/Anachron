@@ -7,6 +7,7 @@
 # Asserts the real filesystem effect, the usage counts reaching the band, and the
 # wire details (auth headers, grammar only on /completion, messages structure).
 set -e
+export ANACHRON_NO_CONFIG=1   # hermetic: never read a developer agent.json
 cd "$(dirname "$0")/.."
 
 TMP=$(mktemp -d)

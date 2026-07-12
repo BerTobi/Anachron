@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <time.h>   /* the "auto" per-conversation sandbox stamps its folder name */
 #ifndef _WIN32
 #include <termios.h>   /* raw-mode line editing on a POSIX terminal */
 #include <unistd.h>
@@ -622,7 +623,10 @@ static void usage(const char *prog) {
         "                      gemini:gemini-flash-latest  the Google Gemini API (free-tier keys work)\n"
         "                      openai:MODEL                any OpenAI-compatible endpoint\n"
         "                                                  (ANACHRON_API_URL overrides the base)\n"
-        "  --sandbox DIR     working directory tools are confined to (default \".\")\n"
+        "  --sandbox DIR     working directory tools are confined to (default \".\");\n"
+        "                    \"auto\" = a fresh anachron-sessions/<stamp>/ per conversation\n"
+        "  --here            sandbox = the current directory (your project folder),\n"
+        "                    overriding any configured sandbox\n"
         "  --max-iters N     tool-loop iteration cap per turn (default 8)\n"
         "  --ctx N           model context window in tokens (default 4096)\n"
         "  --grammar PATH    GBNF grammar to constrain decoding (default chosen by --plan)\n"
@@ -1356,6 +1360,9 @@ static void ui_set_model(ui *u, const char *path) {
     u->model_name[n] = '\0';
 }
 
+static char *sandbox_auto_dir(void);   /* defined with the config loader below */
+static int env_truthy(const char *name);
+
 /* One /help row: the command in the tool colour, the description plain. */
 static void help_row(ui *u, const char *cmd, const char *desc) {
     fputs("  ", u->out);
@@ -1369,9 +1376,10 @@ static void help_row(ui *u, const char *cmd, const char *desc) {
  * a recognized command and should be sent to the model verbatim. `backend_slot`
  * and `ctx_tokens` let /model swap the inference backend in place. */
 static cmd_result handle_command(const char *line, agent_session *s,
-                                 const char *sandbox, int ctx_tokens,
+                                 char **sandbox_p, int sandbox_auto, int ctx_tokens,
                                  infer_ctx **backend_slot,
                                  const session_stats *stats, ui *u) {
+    const char *sandbox = *sandbox_p;
     while (*line == ' ' || *line == '\t') line++;   /* tolerate leading blanks */
     if (line[0] != '/') return CMD_NOT_A_COMMAND;
 
@@ -1418,7 +1426,17 @@ static cmd_result handle_command(const char *line, agent_session *s,
 
     if (strcmp(verb, "/new") == 0 || strcmp(verb, "/clear") == 0) {
         agent_session_clear(s);
-        fprintf(stdout, "(history cleared)\n");
+        if (sandbox_auto) {
+            /* per-conversation sandboxes: a new conversation gets a clean folder
+             * (and drops the old folder's AGENTS.md project notes with it) */
+            free(*sandbox_p);
+            *sandbox_p = sandbox_auto_dir();
+            s->cfg.sandbox_root = *sandbox_p;
+            s->cfg.project_context = NULL;
+            fprintf(stdout, "(history cleared; fresh sandbox %s)\n", *sandbox_p);
+        } else {
+            fprintf(stdout, "(history cleared)\n");
+        }
         return CMD_HANDLED;
     }
 
@@ -1539,11 +1557,17 @@ static cmd_result handle_command(const char *line, agent_session *s,
     return CMD_HANDLED;
 }
 
-/* Find and parse a config file in the current directory. Returns a JSON object
+/* Find and parse a config file: the current directory first (a project-local
+ * agent.json wins), then the per-user global ~/.anachron.json — so `anachron`
+ * opened in any folder still knows your model and key. Returns a JSON object
  * (caller frees with json_free) and sets *out_path to the file used, or NULL if
  * none is present/valid. Keys present in it become defaults that CLI flags override. */
 static json_value *load_config(const char **out_path) {
     static const char *const cands[] = { "agent.json", ".anachron.json", NULL };
+    static char homecfg[1024];
+    /* Hermetic mode for tests/scripts: ignore every config file so a developer's
+     * agent.json (model, API key, sandbox) can't leak into scripted runs. */
+    if (env_truthy("ANACHRON_NO_CONFIG")) return NULL;
     for (int i = 0; cands[i]; i++) {
         char *buf = NULL;
         size_t len = 0;
@@ -1554,7 +1578,43 @@ static json_value *load_config(const char **out_path) {
         if (v && v->type == JSON_OBJECT) { *out_path = cands[i]; return v; }
         json_free(v);
     }
+    const char *home = getenv("HOME");
+    if (!home || !*home) home = getenv("USERPROFILE");   /* Windows */
+    if (home && *home) {
+        snprintf(homecfg, sizeof homecfg, "%s/.anachron.json", home);
+        char *buf = NULL;
+        size_t len = 0;
+        if (plat_read_file(homecfg, &buf, &len) == 0) {
+            const char *err = NULL;
+            json_value *v = json_parse(buf, &err);
+            free(buf);
+            if (v && v->type == JSON_OBJECT) { *out_path = homecfg; return v; }
+            json_free(v);
+        }
+    }
     return NULL;
+}
+
+/* "sandbox": "auto" — a fresh per-conversation folder under ./anachron-sessions,
+ * so one session's files (and its AGENTS.md) never haunt the next. Returns the
+ * malloc'd path of a newly created directory. */
+static char *sandbox_auto_dir(void) {
+    plat_mkdir("anachron-sessions");
+    time_t t = time(NULL);
+    struct tm *tm = localtime(&t);
+    char stamp[32];
+    strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", tm);
+    char path[96];
+    for (int i = 0; i < 100; i++) {
+        if (i == 0) snprintf(path, sizeof path, "anachron-sessions/%s", stamp);
+        else        snprintf(path, sizeof path, "anachron-sessions/%s-%d", stamp, i + 1);
+        if (plat_mtime(path) < 0) {   /* doesn't exist yet */
+            plat_mkdir(path);
+            return xstrdup(path);
+        }
+    }
+    plat_mkdir("anachron-sessions/overflow");
+    return xstrdup("anachron-sessions/overflow");
 }
 
 /* Set an environment variable (the backends read their config from env, so the
@@ -1614,11 +1674,13 @@ static int run_setup(char **model_out, char **sandbox_out, int *lean_out) {
         break;
     }
 
-    fputs("Working folder the agent may read/write [work]: ", stdout); fflush(stdout);
+    fputs("Working folder the agent may read/write [work]\n"
+          "  (\"auto\" = a fresh folder per conversation; \".\" = right here): ", stdout);
+    fflush(stdout);
     buf[0] = '\0';
     if (fgets(buf, sizeof buf, stdin)) chomp(buf);
     char *sandbox = xstrdup(buf[0] ? buf : "work");
-    plat_mkdir(sandbox);
+    if (strcmp(sandbox, "auto") != 0) plat_mkdir(sandbox);
 
     fputs("Faster first turn (lean prompt, slightly terser)? [y/N]: ", stdout); fflush(stdout);
     int lean = 0;
@@ -1708,6 +1770,8 @@ int main(int argc, char **argv) {
             model = argv[++i];
         } else if (strcmp(a, "--sandbox") == 0 && i + 1 < argc) {
             sandbox = argv[++i];
+        } else if (strcmp(a, "--here") == 0) {
+            sandbox = ".";   /* Claude-Code style: the folder you're standing in */
         } else if (strcmp(a, "--max-iters") == 0 && i + 1 < argc) {
             max_iters = atoi(argv[++i]);
         } else if (strcmp(a, "--ctx") == 0 && i + 1 < argc) {
@@ -1834,6 +1898,14 @@ int main(int argc, char **argv) {
      * budget more room unless the user pinned --ctx themselves. */
     if (!ctx_explicit && spec_networked(model)) ctx = 32768;
 
+    /* "auto": every conversation gets its own fresh folder. */
+    int sandbox_auto = strcmp(sandbox, "auto") == 0;
+    char *owned_auto_sandbox = NULL;
+    if (sandbox_auto) {
+        owned_auto_sandbox = sandbox_auto_dir();
+        sandbox = owned_auto_sandbox;
+    }
+
     char *project_context = load_project_context(sandbox);
 
     if (!log_path) { const char *e = getenv("ANACHRON_LOG"); if (e && *e) log_path = e; }
@@ -1907,6 +1979,8 @@ int main(int argc, char **argv) {
         print_turn_stats(&u, plat_time_sec() - t0, &session);
         free(msg);
     } else {
+        /* The REPL owns a live sandbox pointer so /new can rotate it in auto mode. */
+        char *sandbox_live = xstrdup(sandbox);
         u.interactive = plat_isatty_stdin();   /* enable the permission gate when a human is present */
         /* Interactive conversation. Clear any leftover mouse-reporting mode a prior
          * program may have left on, so the wheel scrolls the terminal's scrollback
@@ -1962,13 +2036,14 @@ int main(int argc, char **argv) {
             }
             if (task.len == 0) continue;
             if (sb_cstr(&task)[0] == '!') {   /* shell escape: run it directly, no model */
-                run_shell_escape(&u, sb_cstr(&task) + 1, sandbox);
+                run_shell_escape(&u, sb_cstr(&task) + 1, sandbox_live);
                 continue;
             }
-            cmd_result cr = handle_command(sb_cstr(&task), &session, sandbox, ctx, &backend, &stats, &u);
+            cmd_result cr = handle_command(sb_cstr(&task), &session, &sandbox_live,
+                                           sandbox_auto, ctx, &backend, &stats, &u);
             if (cr == CMD_QUIT) break;
             if (cr == CMD_HANDLED) continue;
-            char *msg = expand_mentions(sb_cstr(&task), sandbox);
+            char *msg = expand_mentions(sb_cstr(&task), sandbox_live);
             double t0 = plat_time_sec();
             interrupt_clear();
             plat_set_echo(0);   /* keys typed while generating won't echo as garbage;
@@ -1983,6 +2058,7 @@ int main(int argc, char **argv) {
             interrupt_clear();
             free(msg);
         }
+        free(sandbox_live);
     }
 
     ui_console_restore(&u);   /* leave the console the colour we found it (Win32) */
@@ -1992,6 +2068,7 @@ int main(int argc, char **argv) {
     free(grammar_act);
     free(project_context);
     free(owned_model); free(owned_sandbox); free(owned_grammar); free(owned_log);
+    free(owned_auto_sandbox);
     if (logf) fclose(logf);
     sb_free(&task);
     return rc;

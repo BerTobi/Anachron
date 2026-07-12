@@ -14,6 +14,11 @@ That's it - no command line needed. On first run ANACHRON asks for the model,
 a working folder, and whether to use the faster "lean" prompt, then offers to
 save your answers to agent.json so the next launch skips straight to the prompt.
 
+  About the working folder: answer  auto  to give EVERY conversation its own
+  fresh folder under anachron-sessions\ (no leftovers between sessions; /new
+  also starts a clean one). Answer  .  to work directly in the current folder,
+  like other coding agents. A fixed name like  work  keeps one shared folder.
+
 
 BIGGER BRAINS: REMOTE INFERENCE AND HOSTED APIS
   The local 0.5B model is the floor, not the ceiling. The --model setting (or the

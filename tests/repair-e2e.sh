@@ -4,6 +4,7 @@
 # weak-model defect. The harness must escape it to \n, ACCEPT the write (not reject),
 # and report the auto-escape. Passes with or without a C compiler present.
 set -e
+export ANACHRON_NO_CONFIG=1   # hermetic: never read a developer agent.json
 
 cd "$(dirname "$0")/.."
 make anachron >/dev/null

@@ -6,6 +6,7 @@
 # Proof the guard worked: the corrected file ends up on disk (it would not exist if
 # the false claim had ended the turn, since the rejected write was reverted).
 set -e
+export ANACHRON_NO_CONFIG=1   # hermetic: never read a developer agent.json
 
 cd "$(dirname "$0")/.."
 make anachron >/dev/null

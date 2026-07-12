@@ -37,7 +37,9 @@ case "$1" in
     --hammer21-big)   MODEL=${ANACHRON_MODEL:-$MODEL_HAMMER21_BIG};   shift ;;
 esac
 
-SANDBOX=${ANACHRON_SANDBOX:-./workspace}
+# "auto" = a fresh anachron-sessions/<stamp>/ per conversation (no residue between
+# sessions). Set ANACHRON_SANDBOX=./workspace for the old shared folder.
+SANDBOX=${ANACHRON_SANDBOX:-auto}
 
 # Build the binary the first time (or after edits if it's missing).
 [ -x ./anachron-llama ] || make llama

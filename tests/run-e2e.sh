@@ -2,6 +2,7 @@
 # End-to-end smoke test: drive the full agent loop with the scripted stub backend
 # and assert the tool calls produced real filesystem effects in a temp sandbox.
 set -e
+export ANACHRON_NO_CONFIG=1   # hermetic: never read a developer agent.json
 
 cd "$(dirname "$0")/.."
 make anachron >/dev/null

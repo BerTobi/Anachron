@@ -7,6 +7,34 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-12
+
+Where the agent works, made deliberate: per-conversation scratch folders, a
+project-folder mode like other coding agents, and config that follows you.
+
+### Added
+- **`"sandbox": "auto"`** — every conversation gets its own fresh
+  `anachron-sessions/<timestamp>/` folder, and `/new` rotates to a clean one
+  (dropping the old folder's `AGENTS.md` project notes with it). No more one
+  session's files haunting the next.
+- **`--here`** — the sandbox is the folder you're standing in, overriding any
+  configured sandbox: `cd my-project && anachron --here` works like other
+  coding agents. (`--sandbox .` was always the built-in default; `--here` makes
+  it explicit and config-proof.)
+- **Global config fallback** — when the current directory has no
+  `agent.json`/`.anachron.json`, `~/.anachron.json` (or `%USERPROFILE%`) is
+  read, so your model and API key follow you into any project folder. A
+  project-local config still wins.
+- **`make install`** — installs the llama build as `anachron` on your PATH
+  (`PREFIX=$HOME/.local` by default).
+- **`ANACHRON_NO_CONFIG=1`** — hermetic mode: ignore every config file. All e2e
+  suites now set it, after the suites were caught silently running against a
+  developer's configured live API (and passing!).
+
+### Changed
+- `run.sh` defaults to `--sandbox auto` (override with `ANACHRON_SANDBOX`).
+- First-run setup explains the `auto` / `.` / fixed-folder sandbox choices.
+
 ## [0.7.1] - 2026-07-03
 
 ### Added
@@ -527,7 +555,8 @@ is the remaining arc before 1.0.
 - Unit tests (`make test`), scripted end-to-end (`make e2e`, `make verify-e2e`),
   `--version`, and project docs (README, HANDOFF, DEPLOY, Instructions, PHASE0-FINDINGS).
 
-[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/BerTobi/Anachron/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/BerTobi/Anachron/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/BerTobi/Anachron/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/BerTobi/Anachron/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/BerTobi/Anachron/compare/v0.5.5...v0.6.0

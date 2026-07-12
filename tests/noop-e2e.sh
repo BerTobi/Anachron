@@ -4,6 +4,7 @@
 # no-op ("NO CHANGE") rather than reported as a successful write, so the loop
 # can't mistake a re-saved stub for progress. The file must survive intact.
 set -e
+export ANACHRON_NO_CONFIG=1   # hermetic: never read a developer agent.json
 
 cd "$(dirname "$0")/.."
 make anachron >/dev/null

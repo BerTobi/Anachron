@@ -4,6 +4,7 @@
 # valid file must be kept. Uses only the balance check, so it passes with or
 # without a C compiler present.
 set -e
+export ANACHRON_NO_CONFIG=1   # hermetic: never read a developer agent.json
 
 cd "$(dirname "$0")/.."
 make anachron >/dev/null

@@ -82,7 +82,7 @@ XP_LDFLAGS = -static -static-libgcc -static-libstdc++ -mconsole \
              -Wl,--major-subsystem-version=5 -Wl,--minor-subsystem-version=1
 LL_CSRC_WIN = $(CORE) $(TOOLS) $(INFER_NET) platform/platform_win32.c $(MAIN)
 
-.PHONY: all test e2e verify-e2e noop-e2e repair-e2e recover-e2e net-e2e win llama antix xp xp-vendor bundle clean
+.PHONY: install all test e2e verify-e2e noop-e2e repair-e2e recover-e2e net-e2e win llama antix xp xp-vendor bundle clean
 
 all: anachron
 
@@ -185,6 +185,14 @@ $(XP_DIST)/anachron-xp.exe: $(LL_CSRC_WIN) infer/infer_llama.cpp $(HEADERS) $(XP
 	@echo "  XPLD  $(XP_DIST)/anachron-xp.exe (static PE32, subsystem 5.01)"
 	@$(XPCXX) build-obj-xp/*.o $(XP_STATIC) $(XP_SYSLIBS) $(XP_LDFLAGS) -o $(XP_DIST)/anachron-xp.exe
 	@echo "Built $(XP_DIST)/anachron-xp.exe - copy it + a GGUF model to the XP box."
+
+# Put ANACHRON on the PATH as `anachron`, so `cd my-project && anachron --here`
+# works like any other coding agent. PREFIX=~/.local by default (no sudo).
+PREFIX ?= $(HOME)/.local
+install: anachron-llama
+	install -d $(PREFIX)/bin
+	install -m 755 anachron-llama $(PREFIX)/bin/anachron
+	@echo "Installed $(PREFIX)/bin/anachron - put your defaults in ~/.anachron.json"
 
 # Refresh the vendored XP artifacts (prebuilt/xp/) from a freshly built spike-phase0
 # build-xp. Run this (then commit prebuilt/xp/) after bumping/rebuilding llama.cpp.
