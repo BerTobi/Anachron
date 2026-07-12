@@ -33,8 +33,8 @@ OUT=$(ANACHRON_API_URL="http://127.0.0.1:$PORT" \
 echo "$OUT" | grep -q 'Wrote net.txt over the wire' || { echo "FAIL(openai): $OUT"; exit 1; }
 grep -q 'hello from the network backend' "$TMP/sb/net.txt" || { echo "FAIL(openai): no file"; exit 1; }
 # the band tracks the history budget on API backends too: 333 prompt tokens
-# of the 32768 budget -> "ctx 1%"
-echo "$OUT" | grep -q 'ctx 1%' || { echo "FAIL(openai): band lost the ctx tracker"; echo "$OUT" | tail -3; exit 1; }
+# of the 131072 budget -> "ctx 0%"
+echo "$OUT" | grep -q 'ctx 0%' || { echo "FAIL(openai): band lost the ctx tracker"; echo "$OUT" | tail -3; exit 1; }
 echo "ok: openai-compatible backend (ctx tracker on the band)"
 
 # 3) anthropic
@@ -75,7 +75,7 @@ echo "ok: /model catalog fallback while a local backend runs"
 OUT=$(printf '/model\nopenai:test-model\nbigwrite\n/quit\n' | ANACHRON_API_URL="http://127.0.0.1:$PORT" \
       ./anachron --sandbox "$TMP/sb" 2>&1)
 echo "$OUT" | grep -q 'Wrote big.txt over the wire' || { echo "FAIL(budget): big turn broke"; echo "$OUT" | tail -4; exit 1; }
-echo "$OUT" | grep -q 'context is filling up' && { echo "FAIL(budget): compacted under a 32k budget"; exit 1; }
+echo "$OUT" | grep -q 'context is filling up' && { echo "FAIL(budget): compacted under a 128k budget"; exit 1; }
 echo "ok: /model switch to an API raises the history budget"
 
 # 6b) ...but an explicit --ctx is respected across the switch (control: the same

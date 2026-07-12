@@ -25,8 +25,9 @@ SCRIPT = [
 ]
 
 # A task containing "bigwrite" gets this script instead: one big write_file
-# (~14 KB of content, enough to overflow a 4096-token history budget but not a
-# 32768 one) then final. Exercises the history-budget-follows-the-backend fix.
+# (~14 KB of content, enough to overflow a 4096-token history budget but not
+# the networked default) then final. Exercises the history-budget-follows-the-
+# backend fix.
 BIG_SCRIPT = [
     "<tool_call>" + json.dumps({
         "name": "write_file",

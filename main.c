@@ -472,7 +472,7 @@ static void fmt_dur(char *buf, size_t n, double secs) {
 
 /* End-of-turn status band: one muted line with the model, how full the context
  * is, tokens generated, and wall time. The ctx figure is the final prompt of the
- * turn as a share of the HISTORY BUDGET (the local window, or the 32k compaction
+ * turn as a share of the HISTORY BUDGET (the local window, or the 128k compaction
  * budget on hosted/remote backends); it turns amber at 80% and earns a hint at
  * 90%, because a 4096-token window fills sooner than it feels. Middle-dot
  * separators on a terminal that renders them, ASCII pipes on the XP console. */
@@ -655,7 +655,8 @@ static void usage(const char *prog) {
         "  --here            sandbox = the current directory (your project folder),\n"
         "                    overriding any configured sandbox\n"
         "  --max-iters N     tool-loop iteration cap per turn (default 8)\n"
-        "  --ctx N           model context window in tokens (default 4096)\n"
+        "  --ctx N           context/history budget in tokens (default 4096 local,\n"
+        "                    131072 for API and remote models)\n"
         "  --grammar PATH    GBNF grammar to constrain decoding (default chosen by --plan)\n"
         "  --no-grammar      disable grammar constraint\n"
         "  --no-verify       disable the verify-on-write guardrail (revert of bad writes)\n"
@@ -1645,8 +1646,8 @@ static cmd_result handle_command(const char *line, agent_session *s,
          * bound by the local 4096-token window, so don't compact as if it were
          * (and restore the real window when switching back to a local model). */
         s->cfg.ctx_tokens = ctx_tokens;
-        if (spec_networked(chosen) && !ctx_explicit && ctx_tokens < 32768)
-            s->cfg.ctx_tokens = 32768;
+        if (spec_networked(chosen) && !ctx_explicit && ctx_tokens < 131072)
+            s->cfg.ctx_tokens = 131072;
         u->ctx_total = s->cfg.ctx_tokens;   /* band tracks % of the history budget */
         fprintf(stdout, "switched to model %s\n", chosen);
         free(chosen);
@@ -2092,8 +2093,10 @@ int main(int argc, char **argv) {
     int use_color = color_force || (want_color && plat_isatty_stdout());
 
     /* Network backends aren't bound by a local 4096-token window; give the history
-     * budget more room unless the user pinned --ctx themselves. */
-    if (!ctx_explicit && spec_networked(model)) ctx = 32768;
+     * budget more room unless the user pinned --ctx themselves. 128k rides well
+     * under big hosted windows (Gemini: 1M) while bounding what a turn re-uploads
+     * per tool step; --ctx overrides in either direction. */
+    if (!ctx_explicit && spec_networked(model)) ctx = 131072;
 
     /* "auto": every conversation gets its own fresh folder. */
     int sandbox_auto = strcmp(sandbox, "auto") == 0;
@@ -2131,7 +2134,7 @@ int main(int argc, char **argv) {
     u.yolo = yolo;
     ui_set_model(&u, model);   /* status-band display name ("stub" when no model) */
     u.ctx_total = ctx;   /* the band tracks how full the HISTORY BUDGET is; for a
-                          * hosted/remote model that's the 32k harness budget (the
+                          * hosted/remote model that's the 128k harness budget (the
                           * point where compaction starts), not the server's own
                           * window. API usage reports exact prompt tokens; a LAN
                           * llama-server with prompt caching reports only the

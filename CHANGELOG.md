@@ -7,6 +7,15 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-07-12
+
+### Changed
+- **The networked history-budget default is now 128k tokens (was 32k).** Hosted
+  models have room to spare (Gemini: 1M), and 32k compacted long sessions far
+  earlier than necessary. 128k still bounds what a turn re-uploads per tool
+  step; `--ctx` (or `"ctx"` in the config) overrides in either direction and
+  applies across `/model` switches. Local models keep the 4096 default.
+
 ## [0.8.4] - 2026-07-12
 
 ### Fixed
