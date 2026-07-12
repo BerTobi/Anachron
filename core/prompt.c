@@ -133,7 +133,10 @@ void history_init(history *h) {
 }
 
 void history_free(history *h) {
-    for (size_t i = 0; i < h->count; i++) free(h->items[i].text);
+    for (size_t i = 0; i < h->count; i++) {
+        free(h->items[i].text);
+        free(h->items[i].image);
+    }
     free(h->items);
     history_init(h);
 }
@@ -145,8 +148,16 @@ void history_push(history *h, msg_role role, const char *text) {
     }
     h->items[h->count].role = role;
     h->items[h->count].text = xstrdup(text ? text : "");
+    h->items[h->count].image = NULL;
     h->items[h->count].elided = 0;
     h->count++;
+}
+
+void history_attach_image(history *h, const char *abs_path) {
+    if (h->count == 0 || !abs_path) return;
+    message *m = &h->items[h->count - 1];
+    free(m->image);
+    m->image = xstrdup(abs_path);
 }
 
 #define SHRINK_KEEP_RECENT 2    /* never truncate the last N turns (recency matters) */
@@ -166,6 +177,8 @@ int history_shrink(history *h) {
         if (h->items[i].role == MSG_TOOL_RESULT && !h->items[i].elided) {
             free(h->items[i].text);
             h->items[i].text = xstrdup("[older tool output elided to save context]");
+            free(h->items[i].image);
+            h->items[i].image = NULL;
             h->items[i].elided = 1;
             return 1;
         }
@@ -185,6 +198,8 @@ int history_shrink(history *h) {
             sb_append(&t, "\n[... older content elided to save context ...]");
             free(m->text);
             m->text = xstrdup(sb_cstr(&t));
+            free(m->image);
+            m->image = NULL;
             m->elided = 1;
             sb_free(&t);
             return 1;
@@ -196,6 +211,8 @@ int history_shrink(history *h) {
         if (h->items[i].role == MSG_TOOL_RESULT && !h->items[i].elided) {
             free(h->items[i].text);
             h->items[i].text = xstrdup("[older tool output elided to save context]");
+            free(h->items[i].image);
+            h->items[i].image = NULL;
             h->items[i].elided = 1;
             return 1;
         }
@@ -231,10 +248,20 @@ static const char *LEAN_FEWSHOT =
     IM_START "user\n<tool_response>\nWrote 36 bytes to add.c (syntax OK)\n</tool_response>" IM_END
     IM_START "assistant\n" "Saved it to add.c." IM_END;
 
+/* Offered only to vision-capable backends: local models can't see the image,
+ * and a 0.5B told about a tool WILL call it. */
+static const char *VISION_ADDENDUM =
+    "\n\nYou can also SEE the screen:\n"
+    "- screenshot   {\"path\": \"<rel-path>\"}  (path optional) capture the whole screen\n"
+    "  to a PNG in the working directory; the image is attached to the result so you\n"
+    "  can look at it. Use it when asked what is on screen, to check a GUI you\n"
+    "  launched, or to read something only visible in another window.";
+
 void prompt_render_system(strbuf *out, int plan_enabled, const char *project_context,
-                          int lean) {
+                          int lean, int vision) {
     sb_clear(out);
     sb_append(out, lean ? LEAN_SYSTEM_PROMPT : SYSTEM_PROMPT);
+    if (vision) sb_append(out, VISION_ADDENDUM);
     if (plan_enabled) sb_append(out, PLAN_ADDENDUM);
     if (project_context && *project_context) {
         sb_append(out, "\n\nProject notes (from AGENTS.md):\n");
@@ -248,7 +275,7 @@ void prompt_render(strbuf *out, history *h, int plan_enabled, const char *active
     sb_append(out, IM_START "system\n");
     {
         strbuf sys; sb_init(&sys);
-        prompt_render_system(&sys, plan_enabled, project_context, lean);
+        prompt_render_system(&sys, plan_enabled, project_context, lean, /*vision*/ 0);
         sb_append(out, sb_cstr(&sys));
         sb_free(&sys);
     }

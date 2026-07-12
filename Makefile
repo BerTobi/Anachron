@@ -34,9 +34,9 @@ MAIN   = main.c
 # not trigger a rebuild.
 HEADERS    = $(wildcard core/*.h platform/*.h infer/*.h tools/*.h)
 
-NATIVE_SRC = $(CORE) $(TOOLS) $(INFER) platform/platform_posix.c $(MAIN)
-WIN_SRC    = $(CORE) $(TOOLS) $(INFER) platform/platform_win32.c $(MAIN)
-TEST_SRC   = tests/test_core.c core/strbuf.c core/json.c core/sandbox.c core/toolcall.c core/verify.c core/obsfmt.c core/edit.c core/glob.c core/gitignore.c core/diff.c core/prompt.c
+NATIVE_SRC = $(CORE) $(TOOLS) $(INFER) platform/platform_posix.c platform/png.c $(MAIN)
+WIN_SRC    = $(CORE) $(TOOLS) $(INFER) platform/platform_win32.c platform/png.c $(MAIN)
+TEST_SRC   = tests/test_core.c core/strbuf.c core/json.c core/sandbox.c core/toolcall.c core/verify.c core/obsfmt.c core/edit.c core/glob.c core/gitignore.c core/diff.c core/prompt.c platform/png.c
 
 # --- Phase 2 real backend: link libllama + ggml (built SSE2-only in the spike) ---
 LLAMA_DIR    = spike-phase0/llama.cpp
@@ -47,7 +47,7 @@ LLAMA_LINK   = -L$(LLAMA_LIBDIR) -Wl,-rpath,$(abspath $(LLAMA_LIBDIR)) \
                -Wl,--no-as-needed -lllama -lggml -lggml-base -lggml-cpu -Wl,--as-needed \
                -lpthread -lm -ldl
 LLAMA_DEF    = -DANACHRON_HAVE_LLAMA
-LL_CSRC      = $(CORE) $(TOOLS) $(INFER_NET) platform/platform_posix.c $(MAIN)
+LL_CSRC      = $(CORE) $(TOOLS) $(INFER_NET) platform/platform_posix.c platform/png.c $(MAIN)
 
 # --- Phase 3: antiX i686 (-m32) real-inference build. Links the 32-bit SSE2-only
 # libs from build-antix-m32 (built in Phase 0). The dev host can run the result. ---
@@ -80,7 +80,7 @@ XP_SYSLIBS = -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32
 XP_EXTRA  = -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mno-avx -D_WIN32_WINNT=0x0501 -DWINVER=0x0501
 XP_LDFLAGS = -static -static-libgcc -static-libstdc++ -mconsole \
              -Wl,--major-subsystem-version=5 -Wl,--minor-subsystem-version=1
-LL_CSRC_WIN = $(CORE) $(TOOLS) $(INFER_NET) platform/platform_win32.c $(MAIN)
+LL_CSRC_WIN = $(CORE) $(TOOLS) $(INFER_NET) platform/platform_win32.c platform/png.c $(MAIN)
 
 .PHONY: install all test e2e verify-e2e noop-e2e repair-e2e recover-e2e net-e2e win llama antix xp xp-vendor bundle clean
 
@@ -133,7 +133,7 @@ anachron-stub.exe: $(WIN_SRC) $(HEADERS)
 	    -D_WIN32_WINNT=0x0501 -DWINVER=0x0501 \
 	    -static -mconsole \
 	    -Wl,--major-subsystem-version=5 -Wl,--minor-subsystem-version=1 \
-	    $(WIN_SRC) -lwininet -o $@
+	    $(WIN_SRC) -lwininet -luser32 -lgdi32 -o $@
 	@echo "Built anachron-stub.exe — STUB backend (no model). For real inference use 'make xp'."
 
 # Real-inference build: C core compiled as C99, the one C++ TU as C++, linked

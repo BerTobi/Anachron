@@ -85,6 +85,27 @@ OUT=$(printf '/model\nopenai:test-model\nbigwrite\n/quit\n' | ANACHRON_API_URL="
 echo "$OUT" | grep -q 'context is filling up' || { echo "FAIL(budget): explicit --ctx 4096 not respected"; exit 1; }
 echo "ok: explicit --ctx survives the switch (compaction control)"
 
+# 7) vision: a screenshot tool call attaches the PNG to the follow-up request
+#    as an inline base64 image part, on both wire shapes. The fake-screenshot
+#    hook substitutes a canned PNG (nothing is captured on CI).
+python3 - "$TMP/shot.png" <<'EOF'
+import struct, sys, zlib
+w, h = 4, 3
+raw = b''.join(b'\x00' + bytes([255,0,0]*w) for _ in range(h))
+def chunk(t, d): return struct.pack('>I',len(d)) + t + d + struct.pack('>I', zlib.crc32(t+d)&0xffffffff)
+png = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB',w,h,8,2,0,0,0))
+       + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
+open(sys.argv[1],'wb').write(png)
+EOF
+OUT=$(ANACHRON_API_URL="http://127.0.0.1:$PORT" ANACHRON_FAKE_SCREENSHOT="$TMP/shot.png" \
+      ./anachron --model "openai:test-model" --sandbox "$TMP/sb" --yolo "lookatscreen" 2>&1)
+echo "$OUT" | grep -q 'I looked at the screen' || { echo "FAIL(vision): $OUT"; exit 1; }
+test -s "$TMP/sb/screenshot.png" || { echo "FAIL(vision): screenshot not saved in sandbox"; exit 1; }
+OUT=$(ANACHRON_API_URL="http://127.0.0.1:$PORT" ANACHRON_API_KEY="sk-test-123" ANACHRON_FAKE_SCREENSHOT="$TMP/shot.png" \
+      ./anachron --model "anthropic:test-model" --sandbox "$TMP/sb" --yolo "lookatscreen" 2>&1)
+echo "$OUT" | grep -q 'I looked at the screen' || { echo "FAIL(vision/anthropic): $OUT"; exit 1; }
+echo "ok: screenshot flow (both wire shapes; image lands in the sandbox)"
+
 # Wire assertions from the server's request log
 python3 - "$TMP/requests.log" <<'EOF'
 import json, sys
@@ -111,7 +132,32 @@ assert b.get("temperature") == 0, "openai: temperature 0 expected"
 b2 = json.loads(anth[1]["body"])
 joined = json.dumps(b2["messages"])
 assert "tool_response" in joined, "anthropic: tool result not in follow-up"
-print("ok: wire contracts (headers, grammar routing, message structure)")
+
+# vision wire contract: the request after the screenshot carries the image
+import base64
+def png_from(msgs, get):
+    for m in msgs:
+        if isinstance(m.get("content"), list):
+            for part in m["content"]:
+                d = get(part)
+                if d: return base64.b64decode(d)
+    return None
+vis_oai = [r for r in oai if "lookatscreen" in r["body"] and "image_url" in r["body"]]
+assert vis_oai, "openai: no request carried an image part"
+png = png_from(json.loads(vis_oai[-1]["body"])["messages"],
+               lambda p: p.get("image_url", {}).get("url", "").split("base64,")[-1]
+                         if p.get("type") == "image_url" else None)
+assert png and png[:8] == b'\x89PNG\r\n\x1a\n', "openai: image part is not the PNG"
+vis_anth = [r for r in anth if "lookatscreen" in r["body"] and '"type":"image"' in r["body"]]
+assert vis_anth, "anthropic: no request carried an image block"
+b3 = json.loads(vis_anth[-1]["body"])
+png = png_from(b3["messages"],
+               lambda p: p.get("source", {}).get("data") if p.get("type") == "image" else None)
+assert png and png[:8] == b'\x89PNG\r\n\x1a\n', "anthropic: image block is not the PNG"
+src = [p for m in b3["messages"] if isinstance(m.get("content"), list)
+       for p in m["content"] if p.get("type") == "image"][0]["source"]
+assert src["type"] == "base64" and src["media_type"] == "image/png"
+print("ok: wire contracts (headers, grammar routing, messages, image parts)")
 EOF
 
 echo "NET-E2E PASS"

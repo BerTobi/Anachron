@@ -16,6 +16,7 @@ typedef enum {
     TC_EDIT,
     TC_SEARCH,       /* grep text across files */
     TC_GLOB,         /* find files by name pattern */
+    TC_SCREENSHOT,   /* capture the screen to a PNG (vision backends see it) */
     TC_PLAN,         /* only offered when the plan scaffold is enabled (--plan) */
     TC_FINAL
 } tc_kind;

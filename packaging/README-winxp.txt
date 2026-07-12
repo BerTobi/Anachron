@@ -50,6 +50,13 @@ BIGGER BRAINS: REMOTE INFERENCE AND HOSTED APIS
   Everything else stays the same: the [y/N] gate, /files, the transcript, the
   sandbox. Only the brain moves.
 
+  THE MODEL CAN SEE YOUR SCREEN (hosted APIs only): with an anthropic:/openai:/
+  gemini: model, ANACHRON gains a  screenshot  tool. Ask "what is on my screen?"
+  or "look at the window behind you and read the error" - it captures the screen
+  to a PNG in the working folder (plain XP GDI, asks [y/N] first) and the model
+  actually looks at the image. The local model and a LAN llama-server cannot see
+  images, so the tool is not offered there.
+
 
 GET A MODEL (required - not included)
   ANACHRON does not ship a model (they are large and separately licensed).

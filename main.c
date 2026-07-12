@@ -214,6 +214,7 @@ static int ui_confirm(const tool_call *c, void *ud) {
     ui_style(u, CR_WARN);
     fputs(c->kind == TC_RUN_COMMAND ? "  run this command? [y/N] "
         : c->kind == TC_WRITE_FILE  ? "  write this file? [y/N] "
+        : c->kind == TC_SCREENSHOT  ? "  capture the screen? [y/N] "
         :                             "  apply this edit? [y/N] ", u->out);
     ui_reset(u);
     fflush(u->out);
@@ -361,6 +362,7 @@ static void ui_tool_call(const tool_call *c, void *ud) {
         case TC_EDIT:        fprintf(u->out, "> edit(%s)", c->path); break;
         case TC_SEARCH:      fprintf(u->out, "> search(%s)", c->pattern ? c->pattern : ""); break;
         case TC_GLOB:        fprintf(u->out, "> glob(%s)", c->pattern ? c->pattern : ""); break;
+        case TC_SCREENSHOT:  fprintf(u->out, "> screenshot(%s)", c->path ? c->path : ""); break;
         case TC_PLAN:        fputs("> plan:", u->out); ui_reset(u);
                              fprintf(u->out, "\n%s\n", c->plan ? c->plan : "");
                              fflush(u->out); return;
@@ -1516,6 +1518,13 @@ static int spec_networked(const char *m) {
                  strncmp(m, "gemini:", 7) == 0);
 }
 
+/* Is it a hosted chat API (vision-capable: images can ride in the messages)?
+ * A LAN llama-server (http://) speaks the text-only /completion endpoint. */
+static int spec_vision(const char *m) {
+    return m && (strncmp(m, "anthropic:", 10) == 0 || strncmp(m, "openai:", 7) == 0 ||
+                 strncmp(m, "gemini:", 7) == 0);
+}
+
 /* Remember the model's display name for the status band: a GGUF path's basename
  * (extension dropped), a server URL's host:port, or an API spec's model id.
  * NULL means the stub backend. */
@@ -1649,6 +1658,7 @@ static cmd_result handle_command(const char *line, agent_session *s,
         if (spec_networked(chosen) && !ctx_explicit && ctx_tokens < 131072)
             s->cfg.ctx_tokens = 131072;
         u->ctx_total = s->cfg.ctx_tokens;   /* band tracks % of the history budget */
+        s->cfg.vision = spec_vision(chosen);   /* offer/withdraw the screenshot tool */
         fprintf(stdout, "switched to model %s\n", chosen);
         free(chosen);
         return CMD_HANDLED;
@@ -2151,6 +2161,7 @@ int main(int argc, char **argv) {
     cfg.plan_enabled = plan_enabled;
     cfg.project_context = project_context;
     cfg.lean = lean;   /* terse prompt (--lean / ANACHRON_LEAN); faster first-turn prefill */
+    cfg.vision = spec_vision(model);   /* hosted chat APIs can see screenshots */
     cfg.diff_colour = 0;   /* diff text stays plain; ui_diff() colours it per-line (both backends) */
     cfg.on_diff = ui_diff;
     cfg.on_file_change = ui_file_change;   /* /files session summary */

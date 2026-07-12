@@ -1,5 +1,6 @@
 #include "agent.h"
 #include "prompt.h"
+#include "sandbox.h"   /* re-resolve a screenshot's path for the image attachment */
 #include "tools.h"
 #include "strbuf.h"
 #include "json.h"
@@ -229,7 +230,8 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
          * Always the FULL system prompt here: lean exists to cut slow local
          * prefill, a cost hosted APIs don't have — they get the whole contract. */
         strbuf sys_text; sb_init(&sys_text);
-        prompt_render_system(&sys_text, cfg->plan_enabled, cfg->project_context, /*lean*/ 0);
+        prompt_render_system(&sys_text, cfg->plan_enabled, cfg->project_context,
+                             /*lean*/ 0, cfg->vision);
         infer_set_chat(cfg->infer, h, sb_cstr(&sys_text));
 
         /* Mode-gate: once a plan is recorded, switch to the plan-free grammar so the
@@ -399,7 +401,8 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
          * so the user can approve it. Read-only tools (read/list/search/glob) are never
          * gated. A decline is fed back so the model picks another approach. */
         if (cfg->confirm_tool &&
-            (call.kind == TC_WRITE_FILE || call.kind == TC_EDIT || call.kind == TC_RUN_COMMAND) &&
+            (call.kind == TC_WRITE_FILE || call.kind == TC_EDIT ||
+             call.kind == TC_RUN_COMMAND || call.kind == TC_SCREENSHOT) &&
             !cfg->confirm_tool(&call, cfg->ud)) {
             const char *msg = "User declined this action. Do NOT retry it - take a different "
                               "approach, or call final to explain what you could not do.";
@@ -415,6 +418,15 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
         if (cfg->on_tool_result) cfg->on_tool_result(obs, ok, cfg->ud);
         log_kv(cfg, "result", obs);
         history_push(h, MSG_TOOL_RESULT, obs);
+        /* A captured screenshot rides along with its result so vision-capable
+         * backends can actually look at it (text backends ignore the attachment). */
+        if (ok && call.kind == TC_SCREENSHOT && call.path) {
+            char *img_abs = NULL;
+            if (sandbox_resolve(cfg->sandbox_root, call.path, &img_abs) == 0) {
+                history_attach_image(h, img_abs);
+                free(img_abs);
+            }
+        }
         /* Remember the last successful mutation so /undo knows what to revert. */
         if (ok && call.path &&
             (call.kind == TC_WRITE_FILE || call.kind == TC_EDIT)) {

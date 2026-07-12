@@ -90,4 +90,11 @@ int  plat_http_post(const char *url, const char *headers,
                     char **resp, size_t *resp_len, int *status,
                     char *errbuf, size_t errsz);
 
+/* Capture the whole screen to a PNG at `path` (absolute). Windows: GDI BitBlt
+ * (XP-safe) + the in-house PNG writer, downscaled by halves to <=1400px wide so
+ * the base64 payload stays within vision-API limits. POSIX: delegates to the
+ * first available capture tool (import/scrot/gnome-screenshot/spectacle/grim);
+ * fails with advice when none is installed or no display is reachable. */
+int  plat_screenshot(const char *path, char *errbuf, size_t errsz);
+
 #endif /* ANACHRON_PLATFORM_H */

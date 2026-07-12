@@ -12,6 +12,7 @@
 #include "glob.h"
 #include "gitignore.h"
 #include "diff.h"
+#include "png.h"
 #include "prompt.h"
 
 #include <assert.h>
@@ -97,6 +98,15 @@ static void test_toolcall(void) {
     rc = toolcall_parse("<tool_call>{\"name\":\"run_command\",\"parameters\":"
                         "{\"cmd\":\"ls\"}}</tool_call>", &tc);
     assert(rc == 0 && tc.kind == TC_RUN_COMMAND && strcmp(tc.cmd, "ls") == 0);
+    toolcall_free(&tc);
+
+    /* screenshot: path optional, defaults to screenshot.png */
+    rc = toolcall_parse("<tool_call>{\"name\":\"screenshot\",\"arguments\":{}}</tool_call>", &tc);
+    assert(rc == 0 && tc.kind == TC_SCREENSHOT && strcmp(tc.path, "screenshot.png") == 0);
+    toolcall_free(&tc);
+    rc = toolcall_parse("<tool_call>{\"name\":\"screenshot\",\"arguments\":"
+                        "{\"path\":\"desk.png\"}}</tool_call>", &tc);
+    assert(rc == 0 && tc.kind == TC_SCREENSHOT && strcmp(tc.path, "desk.png") == 0);
     toolcall_free(&tc);
 
     printf("  toolcall: ok\n");
@@ -411,9 +421,42 @@ static void test_history_shrink(void) {
     printf("  history_shrink: ok\n");
 }
 
+static void test_png(void) {
+    /* 130x90 spans two scanline-fill buffers; verify the container by hand:
+     * signature, IHDR dimensions/format, chunk CRCs present, IEND terminator.
+     * (Full zlib decode is covered by the vision e2e via python.) */
+    int w = 130, h = 90;
+    unsigned char *rgb = malloc((size_t)w * h * 3);
+    for (int i = 0; i < w * h * 3; i++) rgb[i] = (unsigned char)(i * 31);
+    char err[128];
+    const char *path = "anachron-test.png";
+    assert(png_write_rgb(path, w, h, rgb, err, sizeof err) == 0);
+    free(rgb);
+
+    FILE *f = fopen(path, "rb");
+    assert(f);
+    unsigned char head[33];
+    assert(fread(head, 1, 33, f) == 33);
+    static const unsigned char sig[8] = {137, 'P', 'N', 'G', 13, 10, 26, 10};
+    assert(memcmp(head, sig, 8) == 0);
+    assert(memcmp(head + 12, "IHDR", 4) == 0);
+    long W = (head[16] << 24) | (head[17] << 16) | (head[18] << 8) | head[19];
+    long H = (head[20] << 24) | (head[21] << 16) | (head[22] << 8) | head[23];
+    assert(W == w && H == h);
+    assert(head[24] == 8 && head[25] == 2);   /* 8-bit truecolor */
+    fseek(f, -12, SEEK_END);
+    unsigned char tail[12];
+    assert(fread(tail, 1, 12, f) == 12);
+    assert(memcmp(tail + 4, "IEND", 4) == 0);
+    fclose(f);
+    remove(path);
+    printf("  png: ok\n");
+}
+
 int main(void) {
     test_json();
     test_toolcall();
+    test_png();
     test_sandbox();
     test_verify();
     test_repair();

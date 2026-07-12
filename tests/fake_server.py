@@ -38,6 +38,15 @@ BIG_SCRIPT = [
     "\"Wrote big.txt over the wire.\"}}</tool_call>",
 ]
 
+# A task containing "lookatscreen" drives the vision flow: a screenshot call,
+# then final. The test asserts the SECOND request carries the image as an
+# inline base64 content part.
+LOOK_SCRIPT = [
+    "<tool_call>{\"name\": \"screenshot\", \"arguments\": {}}</tool_call>",
+    "<tool_call>{\"name\": \"final\", \"arguments\": {\"message\": "
+    "\"I looked at the screen.\"}}</tool_call>",
+]
+
 PORT = int(sys.argv[1])
 LOGDIR = sys.argv[2]
 cursors = {}
@@ -69,10 +78,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(n).decode("utf-8", "replace")
-        big = "bigwrite" in body
-        script = BIG_SCRIPT if big else SCRIPT
-        key = (self.path, big)
-        if big and "tool_response" not in body:
+        if "bigwrite" in body:
+            script, tag = BIG_SCRIPT, "big"
+        elif "lookatscreen" in body:
+            script, tag = LOOK_SCRIPT, "look"
+        else:
+            script, tag = SCRIPT, ""
+        key = (self.path, tag)
+        if tag and "tool_response" not in body:
             cursors[key] = 0   # first request of a fresh session: restart the script
         idx = cursors.get(key, 0)
         cursors[key] = idx + 1

@@ -63,9 +63,77 @@ static void put_msg(strbuf *b, int *first, const char *role, const char *content
     sb_append(b, "\"}");
 }
 
+static void b64_append(strbuf *b, const unsigned char *p, size_t n) {
+    static const char T[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t i = 0;
+    for (; i + 3 <= n; i += 3) {
+        unsigned long v = ((unsigned long)p[i] << 16) | ((unsigned long)p[i+1] << 8) | p[i+2];
+        sb_putc(b, T[(v >> 18) & 63]); sb_putc(b, T[(v >> 12) & 63]);
+        sb_putc(b, T[(v >> 6) & 63]);  sb_putc(b, T[v & 63]);
+    }
+    if (i < n) {
+        unsigned long v = (unsigned long)p[i] << 16;
+        if (i + 1 < n) v |= (unsigned long)p[i+1] << 8;
+        sb_putc(b, T[(v >> 18) & 63]); sb_putc(b, T[(v >> 12) & 63]);
+        sb_putc(b, i + 1 < n ? T[(v >> 6) & 63] : '=');
+        sb_putc(b, '=');
+    }
+}
+
+static const char *image_media_type(const char *path) {
+    const char *dot = strrchr(path, '.');
+    if (dot) {
+        if (strcmp(dot, ".jpg") == 0 || strcmp(dot, ".jpeg") == 0) return "image/jpeg";
+        if (strcmp(dot, ".gif") == 0)  return "image/gif";
+        if (strcmp(dot, ".webp") == 0) return "image/webp";
+    }
+    return "image/png";
+}
+
+#define IMAGE_ATTACH_MAX (8u * 1024 * 1024)   /* refuse to inline anything bigger */
+
+/* A tool result with an image: content becomes an array of a text part plus an
+ * image part in the provider's shape. Falls back to text-only if the file is
+ * gone or oversized. */
+static void put_msg_image(strbuf *b, int *first, enum api_kind kind,
+                          const char *text, const char *image_path) {
+    char *img = NULL; size_t n = 0;
+    if (plat_read_file(image_path, &img, &n) != 0 || n == 0 || n > IMAGE_ATTACH_MAX) {
+        free(img);
+        put_msg(b, first, "user", text, "<tool_response>\n", "\n</tool_response>");
+        return;
+    }
+    if (!*first) sb_append(b, ",");
+    *first = 0;
+    sb_append(b, "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"");
+    json_escape(b, "<tool_response>\n");
+    json_escape(b, text ? text : "");
+    json_escape(b, "\n</tool_response>");
+    sb_append(b, "\"},");
+    const char *mt = image_media_type(image_path);
+    if (kind == API_ANTHROPIC) {
+        sb_appendf(b, "{\"type\":\"image\",\"source\":{\"type\":\"base64\","
+                      "\"media_type\":\"%s\",\"data\":\"", mt);
+        b64_append(b, (const unsigned char *)img, n);
+        sb_append(b, "\"}}");
+    } else {
+        sb_appendf(b, "{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:%s;base64,", mt);
+        b64_append(b, (const unsigned char *)img, n);
+        sb_append(b, "\"}}");
+    }
+    sb_append(b, "]}");
+    free(img);
+}
+
 /* History -> messages array. Tool results become user turns wrapped in
- * <tool_response> tags, mirroring the ChatML rendering the local models see. */
-static void put_history(strbuf *b, const history *h) {
+ * <tool_response> tags, mirroring the ChatML rendering the local models see.
+ * Only the NEWEST image in the history is inlined: a screenshot is megabytes of
+ * base64 that would otherwise ride along on every subsequent call forever. */
+static void put_history(strbuf *b, const history *h, enum api_kind kind) {
+    size_t last_img = (size_t)-1;
+    for (size_t i = 0; i < h->count; i++)
+        if (h->items[i].image) last_img = i;
     int first = 1;
     for (size_t i = 0; i < h->count; i++) {
         const message *m = &h->items[i];
@@ -77,8 +145,14 @@ static void put_history(strbuf *b, const history *h) {
                 put_msg(b, &first, "assistant", m->text, NULL, NULL);
                 break;
             case MSG_TOOL_RESULT:
-                put_msg(b, &first, "user", m->text,
-                        "<tool_response>\n", "\n</tool_response>");
+                if (m->image && i == last_img)
+                    put_msg_image(b, &first, kind, m->text, m->image);
+                else if (m->image)
+                    put_msg(b, &first, "user", m->text, "<tool_response>\n",
+                            "\n[this earlier screenshot is no longer attached]\n</tool_response>");
+                else
+                    put_msg(b, &first, "user", m->text,
+                            "<tool_response>\n", "\n</tool_response>");
                 break;
         }
     }
@@ -120,7 +194,7 @@ static int api_generate(void *impl, const char *prompt, const char *grammar,
                    c->model, c->max_tokens);
         json_escape(&body, c->system_text ? c->system_text : "");
         sb_append(&body, "\",\"messages\":[");
-        put_history(&body, c->h);
+        put_history(&body, c->h, c->kind);
         sb_append(&body, "]}");
     } else {
         sb_appendf(&body, "{\"model\":\"%s\",\"max_tokens\":%d,\"temperature\":0,"
@@ -130,7 +204,7 @@ static int api_generate(void *impl, const char *prompt, const char *grammar,
         sb_append(&body, "\"}");
         if (c->h->count > 0) {
             sb_append(&body, ",");
-            put_history(&body, c->h);
+            put_history(&body, c->h, c->kind);
         }
         sb_append(&body, "]}");
     }

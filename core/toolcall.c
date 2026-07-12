@@ -14,6 +14,7 @@ const char *toolcall_kind_name(tc_kind k) {
         case TC_EDIT:        return "edit";
         case TC_SEARCH:      return "search";
         case TC_GLOB:        return "glob";
+        case TC_SCREENSHOT:  return "screenshot";
         case TC_PLAN:        return "plan";
         case TC_FINAL:       return "final";
         default:             return "none";
@@ -114,6 +115,11 @@ int toolcall_parse(const char *text, tool_call *out) {
         out->kind = TC_GLOB;
         out->pattern = req_str(args, "pattern");
         ok = out->pattern != NULL;
+    } else if (strcmp(name, "screenshot") == 0) {
+        out->kind = TC_SCREENSHOT;
+        out->path = req_str(args, "path");            /* optional */
+        if (!out->path) out->path = xstrdup("screenshot.png");
+        ok = 1;
     } else if (strcmp(name, "plan") == 0) {
         out->kind = TC_PLAN;
         out->plan = req_str(args, "steps");

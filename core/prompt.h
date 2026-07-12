@@ -17,6 +17,9 @@ typedef enum {
 typedef struct {
     msg_role role;
     char    *text;
+    char    *image;   /* tool result only: absolute path of an attached image
+                       * (screenshot). Vision-capable API backends inline it;
+                       * text backends and the ChatML render ignore it. */
     int      elided;  /* tool result already shrunk by compaction */
 } message;
 
@@ -29,6 +32,10 @@ typedef struct history {   /* tag named so infer.h can forward-declare it */
 void history_init(history *h);
 void history_free(history *h);
 void history_push(history *h, msg_role role, const char *text);
+
+/* Attach an image file to the most recently pushed message (no-op on an empty
+ * history). Compaction drops the attachment together with the message text. */
+void history_attach_image(history *h, const char *abs_path);
 
 /* Drop/shrink the oldest tool results until the rendered prompt is expected to
  * fit within `char_budget`. The original task and recent turns are preserved. */
@@ -49,8 +56,9 @@ void prompt_render(strbuf *out, history *h, int plan_enabled, const char *active
 
 /* Just the system-prompt TEXT (no ChatML markers, no few-shot): the same content
  * prompt_render wraps in the system turn. Chat-API backends send this as their
- * `system` field — frontier models need no demonstrations, only the contract. */
+ * `system` field — frontier models need no demonstrations, only the contract.
+ * `vision` additionally offers the screenshot tool (vision-capable backends). */
 void prompt_render_system(strbuf *out, int plan_enabled, const char *project_context,
-                          int lean);
+                          int lean, int vision);
 
 #endif /* ANACHRON_PROMPT_H */

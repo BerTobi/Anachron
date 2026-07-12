@@ -7,6 +7,33 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-12
+
+### Added
+- **The model can see the screen.** A new `screenshot` tool — inspired by the
+  original Claude CLI, where "see the screen" sat beside read/write/bash from
+  day one — captures the whole screen to a PNG in the working directory and
+  attaches the image to the tool result. On vision-capable backends
+  (`anthropic:`/`openai:`/`gemini:`) the model actually looks at it: "what's on
+  my screen?", "check the GUI you just launched", "read the error in the other
+  window". Details:
+  - **Windows/XP**: classic GDI `BitBlt` into a DIB (every call XP-SP3-safe;
+    new imports GDI32/USER32 ship on every XP), downscaled by halves to
+    ≤1400px wide, written by an in-house dependency-free PNG encoder (stored
+    deflate — format-valid everywhere, zero libraries).
+  - **POSIX**: delegates to the first available capture tool
+    (`import`/`scrot`/`gnome-screenshot`/`spectacle`/`grim`).
+  - The tool is **gated** (`capture the screen? [y/N]`) like writes and
+    commands, and only *offered* in the system prompt when the backend can see
+    images — a text-only local model is never told about it.
+  - Only the newest screenshot stays inlined in the conversation (older ones
+    would re-upload megabytes of base64 on every call); compaction drops
+    attachments with their messages.
+  - `ANACHRON_FAKE_SCREENSHOT=<file>` substitutes a canned image — the vision
+    path is fully testable headless (net-e2e round-trips the PNG bytes through
+    both wire shapes), and it's how the feature was validated live: Gemini
+    described a synthetic four-quadrant test image pixel-perfectly.
+
 ## [0.8.5] - 2026-07-12
 
 ### Changed

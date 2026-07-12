@@ -27,6 +27,8 @@ typedef struct {
     const char *project_context; /* contents of an AGENTS.md/CRUSH.md, injected into the
                                     system prompt; NULL if none. */
     int         lean;            /* 1 = terse (lean) system prompt + few-shot; faster prefill */
+    int         vision;          /* 1 = backend can see images: offer the screenshot tool
+                                    and attach captured images to the chat (API backends) */
     int         diff_colour;     /* 1 = ANSI-colour the diff shown on edits */
     void      (*on_diff)(const char *diff, void *ud); /* nullable: diff shown on edit */
     /* nullable: successful write/edit accounting (added/removed lines) for /files */

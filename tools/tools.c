@@ -539,6 +539,49 @@ static char *do_search(const tool_ctx *ctx, const char *pattern, const char *rel
     return r;
 }
 
+/* screenshot: capture the screen into the sandbox as a PNG. The agent attaches
+ * the file to the tool result so vision backends can look at it. The env hook
+ * ANACHRON_FAKE_SCREENSHOT=<file> substitutes a canned image — that's what makes
+ * the whole vision path testable on headless CI (and it never captures anything). */
+static char *do_screenshot(const tool_ctx *ctx, const char *rel, int *ok) {
+    if (strchr(rel, '\'')) return dup_cstr("ERROR: invalid character in path");
+    char *abs = NULL;
+    if (sandbox_resolve(ctx->sandbox_root, rel, &abs) != 0)
+        return dup_cstr("ERROR: path escapes the working directory");
+
+    char err[256];
+    int rc;
+    size_t written = 0;
+    const char *fake = getenv("ANACHRON_FAKE_SCREENSHOT");
+    if (fake && *fake) {
+        char *buf = NULL; size_t n = 0;
+        rc = plat_read_file(fake, &buf, &n);
+        if (rc == 0) rc = plat_write_file(abs, buf, n);
+        if (rc != 0) snprintf(err, sizeof err, "screenshot: cannot copy %s", fake);
+        written = n;
+        free(buf);
+    } else {
+        rc = plat_screenshot(abs, err, sizeof err);
+        if (rc == 0) {
+            char *buf = NULL;
+            if (plat_read_file(abs, &buf, &written) == 0) free(buf);
+        }
+    }
+    free(abs);
+
+    strbuf r; sb_init(&r);
+    if (rc == 0) {
+        sb_appendf(&r, "Captured the screen to %s (%lu bytes). The image is "
+                       "attached to this result.", rel, (unsigned long)written);
+        *ok = 1;
+    } else {
+        sb_appendf(&r, "ERROR: %s", err);
+    }
+    char *out = dup_cstr(sb_cstr(&r));
+    sb_free(&r);
+    return out;
+}
+
 char *tools_dispatch(const tool_ctx *ctx, const tool_call *call, int *ok) {
     *ok = 0;
     switch (call->kind) {
@@ -549,6 +592,7 @@ char *tools_dispatch(const tool_ctx *ctx, const tool_call *call, int *ok) {
         case TC_EDIT:        return do_edit(ctx, call->path, call->find, call->content, ok);
         case TC_SEARCH:      return do_search(ctx, call->pattern, call->path, ok);
         case TC_GLOB:        return do_glob(ctx, call->pattern, ok);
+        case TC_SCREENSHOT:  return do_screenshot(ctx, call->path, ok);
         default:             return dup_cstr("ERROR: tool not dispatchable");
     }
 }

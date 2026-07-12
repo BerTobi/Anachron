@@ -333,3 +333,84 @@ done:
 }
 
 #endif /* _WIN32 */
+
+/* Screen capture: classic GDI BitBlt into a 24-bit DIB section — every call
+ * here exists on Windows XP SP3 (and NT4, for that matter). CAPTUREBLT pulls
+ * layered windows in too. The DIB is requested top-down (negative height) so
+ * rows come out in PNG order; GDI hands back BGR with 4-byte-aligned rows,
+ * repacked to tight RGB. Screens wider than 1400px are halved (2x2 average)
+ * until they fit, keeping the base64 payload well under vision-API limits. */
+#include "png.h"
+
+int plat_screenshot(const char *path, char *errbuf, size_t errsz) {
+    int sw = GetSystemMetrics(SM_CXSCREEN);
+    int sh = GetSystemMetrics(SM_CYSCREEN);
+    if (sw <= 0 || sh <= 0) {
+        snprintf(errbuf, errsz, "screenshot: no screen metrics");
+        return -1;
+    }
+    HDC sdc = GetDC(NULL);
+    HDC mdc = CreateCompatibleDC(sdc);
+    BITMAPINFO bi;
+    memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = sw;
+    bi.bmiHeader.biHeight = -sh;            /* top-down rows */
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 24;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void *bits = NULL;
+    HBITMAP hbm = CreateDIBSection(sdc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    if (!hbm || !bits) {
+        if (hbm) DeleteObject(hbm);
+        DeleteDC(mdc); ReleaseDC(NULL, sdc);
+        snprintf(errbuf, errsz, "screenshot: CreateDIBSection failed");
+        return -1;
+    }
+    HGDIOBJ old = SelectObject(mdc, hbm);
+    BOOL ok = BitBlt(mdc, 0, 0, sw, sh, sdc, 0, 0, SRCCOPY | CAPTUREBLT);
+    GdiFlush();
+    SelectObject(mdc, old);
+    DeleteDC(mdc); ReleaseDC(NULL, sdc);
+    if (!ok) {
+        DeleteObject(hbm);
+        snprintf(errbuf, errsz, "screenshot: BitBlt failed");
+        return -1;
+    }
+
+    size_t stride = ((size_t)sw * 3 + 3) & ~(size_t)3;   /* DIB rows are dword-aligned */
+    unsigned char *rgb = malloc((size_t)sw * sh * 3);
+    if (!rgb) {
+        DeleteObject(hbm);
+        snprintf(errbuf, errsz, "screenshot: out of memory");
+        return -1;
+    }
+    for (int y = 0; y < sh; y++) {
+        const unsigned char *src = (const unsigned char *)bits + (size_t)y * stride;
+        unsigned char *dst = rgb + (size_t)y * sw * 3;
+        for (int x = 0; x < sw; x++) {          /* BGR -> RGB */
+            dst[x*3]     = src[x*3 + 2];
+            dst[x*3 + 1] = src[x*3 + 1];
+            dst[x*3 + 2] = src[x*3];
+        }
+    }
+    DeleteObject(hbm);
+
+    while (sw > 1400) {                          /* halve with a 2x2 box average */
+        int nw = sw / 2, nh = sh / 2;
+        for (int y = 0; y < nh; y++) for (int x = 0; x < nw; x++) {
+            for (int ch = 0; ch < 3; ch++) {
+                int a = rgb[((size_t)(2*y)   * sw + 2*x)   * 3 + ch];
+                int b = rgb[((size_t)(2*y)   * sw + 2*x+1) * 3 + ch];
+                int c = rgb[((size_t)(2*y+1) * sw + 2*x)   * 3 + ch];
+                int d = rgb[((size_t)(2*y+1) * sw + 2*x+1) * 3 + ch];
+                rgb[((size_t)y * nw + x) * 3 + ch] = (unsigned char)((a+b+c+d) / 4);
+            }
+        }
+        sw = nw; sh = nh;
+    }
+
+    int rc = png_write_rgb(path, sw, sh, rgb, errbuf, errsz);
+    free(rgb);
+    return rc;
+}

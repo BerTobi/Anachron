@@ -472,3 +472,33 @@ int plat_http_post(const char *url, const char *headers,
 }
 
 #endif /* !_WIN32 */
+
+/* Screen capture: POSIX has no portable capture API, so delegate to whichever
+ * desktop capture tool is installed. Every candidate writes a PNG to the exact
+ * path we give it; success = the file exists and is non-empty afterward. */
+int plat_screenshot(const char *path, char *errbuf, size_t errsz) {
+    static const char *tools[] = {
+        "import -silent -window root %s",   /* ImageMagick (X11) */
+        "scrot -o %s",                      /* scrot (X11) */
+        "gnome-screenshot -f %s",           /* GNOME */
+        "spectacle -b -n -o %s",            /* KDE */
+        "grim %s",                          /* Wayland (wlroots) */
+        NULL,
+    };
+    char q[512], cmd[600];
+    if (snprintf(q, sizeof q, "'%s'", path) >= (int)sizeof q) {
+        snprintf(errbuf, errsz, "screenshot: path too long");
+        return -1;
+    }
+    unlink(path);
+    for (int i = 0; tools[i]; i++) {
+        snprintf(cmd, sizeof cmd, tools[i], q);
+        strncat(cmd, " >/dev/null 2>&1", sizeof cmd - strlen(cmd) - 1);
+        if (system(cmd) != 0) continue;
+        struct stat st;
+        if (stat(path, &st) == 0 && st.st_size > 0) return 0;
+    }
+    snprintf(errbuf, errsz, "screenshot: no capture tool worked (need one of "
+             "import/scrot/gnome-screenshot/spectacle/grim, and a display)");
+    return -1;
+}
