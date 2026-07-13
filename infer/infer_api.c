@@ -88,6 +88,7 @@ static const char *image_media_type(const char *path) {
         if (strcmp(dot, ".jpg") == 0 || strcmp(dot, ".jpeg") == 0) return "image/jpeg";
         if (strcmp(dot, ".gif") == 0)  return "image/gif";
         if (strcmp(dot, ".webp") == 0) return "image/webp";
+        if (strcmp(dot, ".pdf") == 0)  return "application/pdf";
     }
     return "image/png";
 }
@@ -114,8 +115,11 @@ static void put_msg_image(strbuf *b, int *first, enum api_kind kind,
     sb_append(b, "\"},");
     const char *mt = image_media_type(image_path);
     if (kind == API_ANTHROPIC) {
-        sb_appendf(b, "{\"type\":\"image\",\"source\":{\"type\":\"base64\","
-                      "\"media_type\":\"%s\",\"data\":\"", mt);
+        /* Anthropic wants PDFs as "document" blocks; images as "image" blocks.
+         * Both use the same base64 source shape. */
+        sb_appendf(b, "{\"type\":\"%s\",\"source\":{\"type\":\"base64\","
+                      "\"media_type\":\"%s\",\"data\":\"",
+                   strcmp(mt, "application/pdf") == 0 ? "document" : "image", mt);
         b64_append(b, (const unsigned char *)img, n);
         sb_append(b, "\"}}");
     } else {

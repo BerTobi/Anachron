@@ -255,7 +255,10 @@ static const char *LEAN_FEWSHOT =
  * grammar that constrains them doesn't know these names, and a 0.5B told
  * about a tool WILL call it. */
 static const char *VISION_ADDENDUM =
-    "\n\nExtra tools available on this backend:\n"
+    "\n\nOn this backend, read_file on a .pdf or image file (.png/.jpg/...) ATTACHES\n"
+    "the document to the result so you can actually view it - use it when the user\n"
+    "asks about a PDF or a picture.\n"
+    "\nExtra tools available on this backend:\n"
     "- screenshot   {\"path\": \"<rel-path>\"}  (path optional) capture the whole screen\n"
     "  to a PNG in the working directory; the image is attached to the result so you\n"
     "  can look at it. Use it when asked what is on screen, to check a GUI you\n"

@@ -7,8 +7,14 @@
 
 #include "toolcall.h"
 
+/* Non-text file kinds a vision-capable backend can view when attached. Returns
+ * the media type ("application/pdf", "image/png", ...) or NULL for text. */
+const char *tools_attachable_media(const char *path);
+
 typedef struct {
     const char *sandbox_root;  /* working directory all tools are confined to */
+    int         vision;        /* 1 = the backend can view attached PDFs/images, so
+                                  read_file on one ATTACHES it instead of erroring */
     int         verify_writes; /* 1 = run the verify-on-write guardrail */
     const char *verify_cc;     /* C compiler for the syntax check (e.g. "cc"); NULL = balance-only */
     /* Optional: when an existing file is overwritten/edited, a diff of the change

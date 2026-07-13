@@ -7,6 +7,21 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-07-13
+
+### Added
+- **The model can read PDFs and images.** `read_file` on a `.pdf` / `.png` /
+  `.jpg` / `.gif` / `.webp` now ATTACHES the document to the tool result
+  through the same pipeline screenshots use — OpenAI/Gemini get a base64 data
+  URI, Anthropic gets a proper `document` block — and the model views it
+  natively (layout, tables, scans). "read report.pdf and summarize it" just
+  works on hosted backends. This was a harness limitation, not a model one:
+  Gemini's compat endpoint happily accepts PDFs (verified empirically before
+  a line was written). On text-only backends (local gguf, llama-server) the
+  tool answers honestly that it cannot view attachments and suggests
+  converting to text. Size cap 8 MB; only the newest attachment stays inlined,
+  same as screenshots.
+
 ## [0.18.0] - 2026-07-13
 
 ### Added

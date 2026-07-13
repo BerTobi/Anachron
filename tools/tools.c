@@ -38,10 +38,47 @@ static char *err_obs(const char *fmt, const char *arg, int *ok) {
     return r;
 }
 
+/* PDFs and images aren't text: on a vision-capable backend they are ATTACHED to
+ * the tool result (the same pipeline screenshots use) so the model can look at
+ * them; elsewhere the honest answer is "convert it". */
+const char *tools_attachable_media(const char *path) {
+    const char *dot = strrchr(path, '.');
+    if (!dot) return NULL;
+    if (strcmp(dot, ".pdf") == 0)  return "application/pdf";
+    if (strcmp(dot, ".png") == 0)  return "image/png";
+    if (strcmp(dot, ".jpg") == 0 || strcmp(dot, ".jpeg") == 0) return "image/jpeg";
+    if (strcmp(dot, ".gif") == 0)  return "image/gif";
+    if (strcmp(dot, ".webp") == 0) return "image/webp";
+    return NULL;
+}
+
 static char *do_read_file(const tool_ctx *ctx, const char *rel, long offset, int *ok) {
     char *abs = NULL;
     if (sandbox_resolve(ctx->sandbox_root, rel, &abs) != 0)
         return err_obs("ERROR: path \"%s\" escapes the working directory", rel, ok);
+    const char *mt = tools_attachable_media(rel);
+    if (mt) {
+        char *buf = NULL; size_t len = 0;
+        int rc = plat_read_file(abs, &buf, &len);
+        free(buf); free(abs);
+        if (rc != 0) return err_obs("ERROR: could not read \"%s\"", rel, ok);
+        strbuf r; sb_init(&r);
+        if (ctx->vision) {
+            sb_appendf(&r, "Attached %s (%s, %lu bytes) - the document is included "
+                           "with this result so you can view it.",
+                       rel, mt, (unsigned long)len);
+            *ok = 1;
+        } else {
+            sb_appendf(&r, "ERROR: %s is a binary document (%s) and this backend "
+                           "cannot view attachments. Ask the user for a plain-text "
+                           "version, or extract the text with a command-line tool.",
+                       rel, mt);
+            *ok = 0;
+        }
+        char *out = dup_cstr(sb_cstr(&r));
+        sb_free(&r);
+        return out;
+    }
     char *buf = NULL; size_t len = 0;
     int rc = plat_read_file(abs, &buf, &len);
     free(abs);

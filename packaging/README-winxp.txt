@@ -53,6 +53,10 @@ BIGGER BRAINS: REMOTE INFERENCE AND HOSTED APIS
   CONVERSATIONS SURVIVE QUITTING: every turn is auto-saved in the working
   folder; start with  --continue  (or -c) to pick up where you left off.
 
+  THE MODEL CAN READ PDFs AND IMAGES (hosted APIs only): ask it to read a
+  .pdf or .png/.jpg in the working folder and the document is attached so the
+  model actually views it - tables, layout, even scans.
+
   THE MODEL CAN ASK YOU QUESTIONS: an  ask  tool lets it pause and put a real
   decision to you ("JSON or INI?") and wait for your typed answer.
 

@@ -282,6 +282,7 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
     tctx.sandbox_root  = cfg->sandbox_root;
     tctx.verify_writes = cfg->verify_writes;
     tctx.verify_cc     = cfg->verify_cc;
+    tctx.vision        = cfg->vision;
     tctx.diff_colour   = cfg->diff_colour;
     tctx.on_diff       = cfg->on_diff;
     tctx.on_file_change = cfg->on_file_change;
@@ -657,9 +658,13 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
         if (cfg->on_tool_result) cfg->on_tool_result(obs, ok, cfg->ud);
         log_kv(cfg, "result", obs);
         history_push(h, MSG_TOOL_RESULT, obs);
-        /* A captured screenshot rides along with its result so vision-capable
-         * backends can actually look at it (text backends ignore the attachment). */
-        if (ok && call.kind == TC_SCREENSHOT && call.path) {
+        /* A captured screenshot — or a read_file on a PDF/image — rides along
+         * with its result so vision-capable backends can actually look at it
+         * (text backends ignore the attachment). */
+        if (ok && call.path &&
+            (call.kind == TC_SCREENSHOT ||
+             (call.kind == TC_READ_FILE && cfg->vision &&
+              tools_attachable_media(call.path) != NULL))) {
             char *img_abs = NULL;
             if (sandbox_resolve(cfg->sandbox_root, call.path, &img_abs) == 0) {
                 history_attach_image(h, img_abs);

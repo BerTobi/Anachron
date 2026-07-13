@@ -117,6 +117,39 @@ grep -q 'should not appear' "$TMP/requests.log" && { echo "FAIL(fetch): script t
 grep -q '<h1>' "$TMP/requests.log" && { echo "FAIL(fetch): markup leaked"; exit 1; }
 echo "ok: fetch strips HTML; -p prints only the answer"
 
+# 7b) read_file on a PDF attaches the document: openai gets a data URI with
+#     application/pdf; anthropic gets a "document" block. Text backends refuse
+#     politely (covered by the observation contract, not asserted here).
+python3 - "$TMP/sb/doc.pdf" <<'EOF'
+import sys
+open(sys.argv[1], 'wb').write(b"%PDF-1.4\n1 0 obj\n<< >>\nendobj\ntrailer\n<< >>\n%%EOF\n")
+EOF
+OUT=$(ANACHRON_API_URL="http://127.0.0.1:$PORT" \
+      ./anachron -p --model "openai:test-model" --sandbox "$TMP/sb" --yolo "readpdf please" 2>/dev/null)
+test "$OUT" = "Read the PDF." || { echo "FAIL(pdf/openai): got '$OUT'"; exit 1; }
+grep -q 'data:application/pdf;base64' "$TMP/requests.log" || { echo "FAIL(pdf): data URI missing"; exit 1; }
+OUT=$(ANACHRON_API_URL="http://127.0.0.1:$PORT" ANACHRON_API_KEY="sk-test-123" \
+      ./anachron -p --model "anthropic:test-model" --sandbox "$TMP/sb" --yolo "readpdf please" 2>/dev/null)
+test "$OUT" = "Read the PDF." || { echo "FAIL(pdf/anthropic): got '$OUT'"; exit 1; }
+python3 - "$TMP/requests.log" <<'EOF'
+import json, sys
+found = False
+for line in open(sys.argv[1]):
+    r = json.loads(line)
+    if r["path"] != "/v1/messages" or "readpdf" not in r["body"]:
+        continue
+    for m in json.loads(r["body"])["messages"]:
+        if isinstance(m.get("content"), list):
+            for part in m["content"]:
+                if part.get("type") == "document":
+                    src = part["source"]
+                    assert src["type"] == "base64"
+                    assert src["media_type"] == "application/pdf"
+                    found = True
+assert found, "anthropic document block missing"
+print("ok: read_file attaches PDFs (data URI + document block)")
+EOF
+
 # 8b) websearch: query percent-encoded onto the search base URL, results page
 #     stripped to text like fetch
 OUT=$(ANACHRON_API_URL="http://127.0.0.1:$PORT" \

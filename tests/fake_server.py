@@ -62,6 +62,14 @@ FETCH_SCRIPT = [
     "\"Fetched the page.\"}}</tool_call>",
 ]
 
+# "readpdf" tasks: read_file on a PDF -> the harness must ATTACH the document
+# to the follow-up request; then final.
+PDF_SCRIPT = [
+    "<tool_call>{\"name\": \"read_file\", \"arguments\": {\"path\": \"doc.pdf\"}}</tool_call>",
+    "<tool_call>{\"name\": \"final\", \"arguments\": {\"message\": "
+    "\"Read the PDF.\"}}</tool_call>",
+]
+
 # "searchweb" tasks: a websearch tool call (the test points ANACHRON_SEARCH_URL
 # at this server), then final.
 SEARCH_SCRIPT = [
@@ -132,6 +140,8 @@ class Handler(BaseHTTPRequestHandler):
             script, tag = LOOK_SCRIPT, "look"
         elif "fetchpage" in body:
             script, tag = FETCH_SCRIPT, "fetch"
+        elif "readpdf" in body:
+            script, tag = PDF_SCRIPT, "pdf"
         elif "searchweb" in body:
             script, tag = SEARCH_SCRIPT, "search"
         elif "flaky" in body:
