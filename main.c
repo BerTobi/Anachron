@@ -211,6 +211,20 @@ static void ui_span(ui *u, ui_role role, const char *text) {
     ui_style(u, role); fputs(text, u->out); ui_reset(u);
 }
 
+/* The API key's fingerprint — first/last four characters and the length,
+ * never the middle. Enough to spot a transcription slip (wrong length, wrong
+ * ends) without ever printing the secret. Empty string when no key is set. */
+static void key_fingerprint(char *dst, size_t n) {
+    const char *k = getenv("ANACHRON_API_KEY");
+    dst[0] = '\0';
+    if (!k || !*k) return;
+    size_t kl = strlen(k);
+    if (kl >= 8)
+        snprintf(dst, n, "%.4s...%s (%lu chars)", k, k + kl - 4, (unsigned long)kl);
+    else
+        snprintf(dst, n, "(%lu chars - too short?)", (unsigned long)kl);
+}
+
 /* Banner row: "  label value" with the label muted. */
 static void banner_row(ui *u, const char *label, const char *value) {
     fputs("  ", u->out);
@@ -1686,11 +1700,16 @@ static int list_api_models(const char *cur_spec, char ***out) {
         if (hr != 0)
             fprintf(stdout, "  (%.*s catalog unreachable: %s)\n",
                     (int)(strlen(prefix) - 1), prefix, err);
-        else
-            fprintf(stdout, "  (%.*s catalog refused: HTTP %d%s)\n",
+        else {
+            char fp[64];
+            key_fingerprint(fp, sizeof fp);
+            fprintf(stdout, "  (%.*s catalog refused: HTTP %d%s%s%s)\n",
                     (int)(strlen(prefix) - 1), prefix, status,
                     (status == 400 || status == 401 || status == 403)
-                        ? " - check the api_key in agent.json" : "");
+                        ? " - check the api_key in agent.json" : "",
+                    fp[0] ? "; key in use: " : "; no api_key is set",
+                    fp);
+        }
         free(resp);
         return 0;
     }
@@ -2630,6 +2649,11 @@ int main(int argc, char **argv) {
                    : (verify_cc ? "on (balance + cc syntax check)" : "on (balance check)"));
         banner_row(&u, "context", project_context ? "AGENTS.md loaded" : "(no AGENTS.md)");
         banner_row(&u, "config ", cfg_path ? cfg_path : "(none)");
+        {
+            char fp[64];
+            key_fingerprint(fp, sizeof fp);
+            if (fp[0]) banner_row(&u, "api key", fp);
+        }
         if (grammar) banner_row(&u, "grammar", grammar_path);
         fputc('\n', stdout);
         ui_span(&u, CR_MUTED, "Type a task (use @path to attach a file) - /help for commands.\n");

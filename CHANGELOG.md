@@ -7,6 +7,17 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.15.3] - 2026-07-13
+
+### Fixed
+- **The key fingerprint now appears where you actually look.** v0.15.2 printed
+  it only when an API backend opened — which never happens on a machine that
+  starts on the local model, exactly the setup that needed it. Now the
+  interactive banner shows an `api key AQ.A...3K6Q (53 chars)` row whenever a
+  key is configured (regardless of the running model), and the `/model`
+  "catalog refused" message embeds the fingerprint of the key that was
+  actually sent.
+
 ## [0.15.2] - 2026-07-13
 
 ### Fixed
