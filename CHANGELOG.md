@@ -7,6 +7,18 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.15.4] - 2026-07-13
+
+### Fixed
+- **The key fingerprint now covers every byte.** Ends + length verify only 8
+  of the key's characters; a typo in the middle sailed through and still
+  400'd. The fingerprint gains a 16-bit checksum over the whole key
+  (`AQ.A...3K6Q (53 chars, sum 0849)`) — a slip anywhere changes it.
+- A 4xx whose body is NOT in the provider's structured error format now earns
+  a note that a proxy or antivirus may be intercepting the connection —
+  XP-era security software that interposes on TLS is a real failure mode, and
+  its error pages masquerade as API errors.
+
 ## [0.15.3] - 2026-07-13
 
 ### Fixed

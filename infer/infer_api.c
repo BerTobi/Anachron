@@ -173,6 +173,12 @@ static void print_api_error(const char *who, int status, const char *resp) {
             msg ? ": " : (resp && *resp ? ": " : ""),
             msg ? msg : (resp ? resp : ""));
     if (status == 401) fprintf(stderr, "%s: is ANACHRON_API_KEY set and valid?\n", who);
+    /* Providers answer errors in a structured {"error":{...}} shape. A body
+     * that doesn't parse that way usually means something ELSE answered — a
+     * proxy, a captive portal, or an antivirus interposing on TLS. */
+    if (!msg && resp && *resp && status >= 400)
+        fprintf(stderr, "%s: note: that response is not in the provider's error format - "
+                        "a proxy or antivirus may be intercepting the connection\n", who);
     json_free(jv);
 }
 

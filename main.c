@@ -211,18 +211,23 @@ static void ui_span(ui *u, ui_role role, const char *text) {
     ui_style(u, role); fputs(text, u->out); ui_reset(u);
 }
 
-/* The API key's fingerprint — first/last four characters and the length,
- * never the middle. Enough to spot a transcription slip (wrong length, wrong
- * ends) without ever printing the secret. Empty string when no key is set. */
+/* The API key's fingerprint — first/last four characters, the length, and a
+ * 16-bit djb2 checksum over EVERY byte, never the middle characters. The ends
+ * + length catch most transcription slips; the checksum catches the rest (a
+ * typo anywhere changes it). The secret itself is never printed. */
 static void key_fingerprint(char *dst, size_t n) {
     const char *k = getenv("ANACHRON_API_KEY");
     dst[0] = '\0';
     if (!k || !*k) return;
     size_t kl = strlen(k);
+    unsigned long h = 5381;
+    for (const char *p = k; *p; p++) h = (h * 33 + (unsigned char)*p) & 0xFFFFFFFFul;
     if (kl >= 8)
-        snprintf(dst, n, "%.4s...%s (%lu chars)", k, k + kl - 4, (unsigned long)kl);
+        snprintf(dst, n, "%.4s...%s (%lu chars, sum %04lx)", k, k + kl - 4,
+                 (unsigned long)kl, h & 0xffff);
     else
-        snprintf(dst, n, "(%lu chars - too short?)", (unsigned long)kl);
+        snprintf(dst, n, "(%lu chars - too short?, sum %04lx)",
+                 (unsigned long)kl, h & 0xffff);
 }
 
 /* Banner row: "  label value" with the label muted. */
