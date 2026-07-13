@@ -7,6 +7,38 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-07-13
+
+### Added — the broad OpenCode wave
+- **`ask` tool**: the model can put a question to YOU mid-task and wait for
+  the answer (design choices, permissions, missing credentials). Works piped;
+  in `-p` mode the model is told to use its judgement instead.
+- **`websearch` tool**: DuckDuckGo's plain-HTML endpoint through the fetch
+  extractor — no API key. `ANACHRON_SEARCH_URL` overrides the engine. Gated.
+- **Per-tool permissions**: config `"permission": {"run_command": "deny",
+  "write_file": "allow", ...}` — `ask` (gate, the default for mutating/egress
+  tools), `allow` (skip the gate), `deny` (refuse with a note the model can
+  react to).
+- **`/init`**: explores the project and writes (or refreshes) AGENTS.md.
+- **`/redo`**: restores what `/undo` reverted (`.anredo` twin of `.anbak`).
+- **`/compact`**: manual history compaction, down to half the budget.
+- **`/export [file]`**: the conversation as markdown (default transcript.md).
+- **Custom commands**: `.anachron/commands/<name>.md` (project) or
+  `~/.anachron/commands/<name>.md` (global) become `/name` — the body is a
+  prompt template with `$ARGUMENTS`, `` !`cmd` `` shell injection, and
+  `@file` mentions. `/commands` lists them.
+- **Rules expansion**: `CLAUDE.md` accepted as a project-rules fallback,
+  global `~/.anachron/AGENTS.md` appended (user preferences that travel),
+  and config `"instructions": [paths]` merges extra rules files.
+- **`small_model` config**: sub-agents (both in-process and the parallel
+  processes) run on a cheaper spec when set — the fire test's
+  big-brain-writes/small-brain-cranks workflow, built in.
+
+### Deliberately not taken from OpenCode
+LSP, MCP, plugins (runtimes that don't fit a static XP binary); share links
+and server/web mode (hosted service); themes/keybinds/external editor;
+git-snapshot undo; apply_patch; formatter hooks.
+
 ## [0.16.0] - 2026-07-13
 
 ### Fixed (both straight from the Sokoban fire test)

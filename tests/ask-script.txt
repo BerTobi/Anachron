@@ -1,0 +1,3 @@
+<tool_call>{"name": "ask", "arguments": {"question": "Should the config live in JSON or INI format?"}}</tool_call>
+===
+<tool_call>{"name": "final", "arguments": {"message": "Going with the answer given."}}</tool_call>

@@ -22,9 +22,12 @@ typedef enum {
     TC_GLOB,         /* find files by name pattern */
     TC_SCREENSHOT,   /* capture the screen to a PNG (vision backends see it) */
     TC_FETCH,        /* GET a URL and return its text (HTML stripped) */
+    TC_WEBSEARCH,    /* web search (DuckDuckGo HTML) -> result text */
     TC_AGENT,        /* run a sub-agent on a task in a fresh context (depth 1) */
+    TC_ASK,          /* ask the human a question mid-task (interactive only) */
     TC_PLAN,         /* only offered when the plan scaffold is enabled (--plan) */
-    TC_FINAL
+    TC_FINAL,
+    TC_KIND_COUNT    /* keep last: sizes the per-tool permission table */
 } tc_kind;
 
 typedef struct {
@@ -35,6 +38,8 @@ typedef struct {
     char   *pattern;  /* search: text to grep; glob: filename wildcard */
     char   *cmd;      /* run_command */
     char   *url;      /* fetch */
+    char   *query;    /* websearch */
+    char   *question; /* ask */
     char   *task;     /* agent: the sub-task description (single form) */
     char  **tasks;    /* agent: parallel form — up to AGENT_MAX_PAR sub-tasks */
     size_t  ntasks;

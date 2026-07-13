@@ -117,6 +117,15 @@ grep -q 'should not appear' "$TMP/requests.log" && { echo "FAIL(fetch): script t
 grep -q '<h1>' "$TMP/requests.log" && { echo "FAIL(fetch): markup leaked"; exit 1; }
 echo "ok: fetch strips HTML; -p prints only the answer"
 
+# 8b) websearch: query percent-encoded onto the search base URL, results page
+#     stripped to text like fetch
+OUT=$(ANACHRON_API_URL="http://127.0.0.1:$PORT" \
+      ANACHRON_SEARCH_URL="http://127.0.0.1:$PORT/page.html?q=" \
+      ./anachron -p --model "openai:test-model" --sandbox "$TMP/sb" --yolo "searchweb" 2>/dev/null)
+test "$OUT" = "Searched the web." || { echo "FAIL(websearch): got '$OUT'"; exit 1; }
+grep -q 'page.html?q=xyzzy+magic+word' "$TMP/requests.log" || { echo "FAIL(websearch): query not encoded onto URL"; exit 1; }
+echo "ok: websearch (encoded query, stripped results)"
+
 # 9) transient failures are retried: the server 429s twice, then recovers; the
 #    turn must succeed anyway, with retry notes on stderr.
 rm -f "$TMP/sb/net.txt"

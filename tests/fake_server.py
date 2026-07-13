@@ -62,6 +62,15 @@ FETCH_SCRIPT = [
     "\"Fetched the page.\"}}</tool_call>",
 ]
 
+# "searchweb" tasks: a websearch tool call (the test points ANACHRON_SEARCH_URL
+# at this server), then final.
+SEARCH_SCRIPT = [
+    "<tool_call>{\"name\": \"websearch\", \"arguments\": "
+    "{\"query\": \"xyzzy magic word\"}}</tool_call>",
+    "<tool_call>{\"name\": \"final\", \"arguments\": {\"message\": "
+    "\"Searched the web.\"}}</tool_call>",
+]
+
 PAGE_HTML = """<!doctype html>
 <html><head><title>Fetch Test</title>
 <style>body { color: red }</style>
@@ -77,7 +86,9 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path == "/page.html":
+        with open(f"{LOGDIR}/requests.log", "a") as f:
+            f.write(json.dumps({"path": self.path, "method": "GET", "body": ""}) + "\n")
+        if self.path.startswith("/page.html"):
             out = PAGE_HTML.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
@@ -121,6 +132,8 @@ class Handler(BaseHTTPRequestHandler):
             script, tag = LOOK_SCRIPT, "look"
         elif "fetchpage" in body:
             script, tag = FETCH_SCRIPT, "fetch"
+        elif "searchweb" in body:
+            script, tag = SEARCH_SCRIPT, "search"
         elif "flaky" in body:
             script, tag = SCRIPT, "flaky"   # own cursor: recovery after the 429s
         else:

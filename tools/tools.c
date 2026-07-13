@@ -283,6 +283,7 @@ static char *do_list_dir(const tool_ctx *ctx, const char *rel, int *ok) {
             const char *nm = dl.names[i];
             size_t nl = strlen(nm);
             if (nl >= 6 && strcmp(nm + nl - 6, ".anbak") == 0) continue; /* hide edit backups */
+            if (nl >= 7 && strcmp(nm + nl - 7, ".anredo") == 0) continue;
             if (strncmp(nm, ".anachron", 9) == 0) continue;   /* hide harness state */
             if (shown >= MAX_OBS_LINES) {
                 size_t rem = 0; /* count only the remaining VISIBLE entries */
@@ -397,6 +398,7 @@ static int ignored_entry(const char *n) {
     if (n[0] == '.') return 1;
     size_t l = strlen(n);
     if (l >= 6 && strcmp(n + l - 6, ".anbak") == 0) return 1;
+    if (l >= 7 && strcmp(n + l - 7, ".anredo") == 0) return 1;
     static const char *const junk[] = { "node_modules", "build", "dist", "target", "obj", "bin", NULL };
     for (int i = 0; junk[i]; i++) if (strcmp(n, junk[i]) == 0) return 1;
     return 0;
@@ -697,6 +699,30 @@ static char *do_fetch(const tool_ctx *ctx, const char *url, int *ok) {
     return out;
 }
 
+/* websearch: a query against DuckDuckGo's plain-HTML endpoint (no JS, no API
+ * key), stripped to text by the same extractor fetch uses. The base URL is
+ * overridable (ANACHRON_SEARCH_URL) for tests and for people who prefer a
+ * different HTML-speaking engine. */
+static char *do_websearch(const tool_ctx *ctx, const char *query, int *ok) {
+    const char *base = getenv("ANACHRON_SEARCH_URL");
+    if (!base || !*base) base = "https://html.duckduckgo.com/html/?q=";
+    strbuf url; sb_init(&url);
+    sb_append(&url, base);
+    for (const char *p = query; *p; p++) {   /* percent-encode the query */
+        unsigned char c = (unsigned char)*p;
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.')
+            sb_putc(&url, (char)c);
+        else if (c == ' ')
+            sb_putc(&url, '+');
+        else
+            sb_appendf(&url, "%%%02X", c);
+    }
+    char *out = do_fetch(ctx, sb_cstr(&url), ok);
+    sb_free(&url);
+    return out;
+}
+
 char *tools_dispatch(const tool_ctx *ctx, const tool_call *call, int *ok) {
     *ok = 0;
     switch (call->kind) {
@@ -709,6 +735,7 @@ char *tools_dispatch(const tool_ctx *ctx, const tool_call *call, int *ok) {
         case TC_GLOB:        return do_glob(ctx, call->pattern, ok);
         case TC_SCREENSHOT:  return do_screenshot(ctx, call->path, ok);
         case TC_FETCH:       return do_fetch(ctx, call->url, ok);
+        case TC_WEBSEARCH:   return do_websearch(ctx, call->query, ok);
         default:             return dup_cstr("ERROR: tool not dispatchable");
     }
 }

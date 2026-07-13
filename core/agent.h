@@ -10,6 +10,11 @@
 #include "toolcall.h"
 #include "prompt.h"
 
+/* Per-tool permission policy (config key "permission"): ASK = gate with the
+ * interactive [y/N] prompt (the default for mutating/egress tools), ALLOW =
+ * never ask, DENY = refuse at dispatch with a note the model can react to. */
+enum { TOOL_ASK = 0, TOOL_ALLOW, TOOL_DENY };
+
 typedef struct {
     infer_ctx  *infer;         /* backend (stub or llama) */
     const char *grammar;       /* GBNF to constrain decoding; NULL for the stub */
@@ -36,6 +41,10 @@ typedef struct {
                                     callbacks (which a sub-agent leaves NULL). */
     char        model_spec[192]; /* the running model spec, for spawning parallel
                                     sub-agent PROCESSES (`anachron -p`); "" = default */
+    char        small_model[192];/* config "small_model": sub-agents run on this cheaper
+                                    spec when set ("" = same model as the parent) */
+    int         small_model_vision; /* spec_vision(small_model), precomputed by main */
+    int         tool_perm[TC_KIND_COUNT]; /* TOOL_ASK/ALLOW/DENY per tool kind */
     int         diff_colour;     /* 1 = ANSI-colour the diff shown on edits */
     void      (*on_diff)(const char *diff, void *ud); /* nullable: diff shown on edit */
     /* nullable: successful write/edit accounting (added/removed lines) for /files */
@@ -59,6 +68,9 @@ typedef struct {
      * its tool calls apart (the child's own hooks still fire in between). */
     void (*on_child_start)(void *ud);
     void (*on_child_end)(void *ud);
+    /* nullable: the `ask` tool — put the question to the human and return a
+     * malloc'd answer, or NULL when nobody is there (EOF / print mode). */
+    char *(*on_ask)(const char *question, void *ud);
 } agent_config;
 
 /* A conversation. The history persists across user turns, so the agent

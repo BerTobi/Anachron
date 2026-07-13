@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <errno.h>
 #include <time.h>   /* the "auto" per-conversation sandbox stamps its folder name */
 #ifndef _WIN32
@@ -285,6 +286,7 @@ static int ui_confirm(const tool_call *c, void *ud) {
             : c->kind == TC_WRITE_FILE  ? "  write this file? [y/N] "
             : c->kind == TC_SCREENSHOT  ? "  capture the screen? [y/N] "
             : c->kind == TC_FETCH       ? "  fetch this URL? [y/N] "
+            : c->kind == TC_WEBSEARCH   ? "  run this web search? [y/N] "
             :                             "  apply this edit? [y/N] ", u->out);
     ui_reset(u);
     fflush(u->out);
@@ -454,6 +456,33 @@ static void ui_iter_start(int iter, void *ud) { (void)iter; ui_stream_reset((ui 
 static void ui_child_start(void *ud) { ((ui *)ud)->nest = 1; }
 static void ui_child_end(void *ud)   { ((ui *)ud)->nest = 0; }
 
+/* The `ask` tool: show the model's question, read one line from the human.
+ * Returns a malloc'd answer, or NULL at EOF / when nobody is attached — the
+ * loop then tells the model to use its judgement. Works piped too (the next
+ * queued input line becomes the answer). */
+static char *ui_ask(const char *question, void *ud) {
+    ui *u = ud;
+    fputc('\n', u->out);
+    ui_style(u, CR_USER);
+    fputs("? ", u->out);
+    ui_reset(u);
+    fputs(question, u->out);
+    fputc('\n', u->out);
+    ui_style(u, CR_USER);
+    fputs("answer> ", u->out);
+    ui_reset(u);
+    fflush(u->out);
+    plat_flush_input();
+    plat_set_echo(1);
+    char buf[1024];
+    char *r = fgets(buf, sizeof buf, stdin);
+    plat_set_echo(0);
+    if (!r) { fputc('\n', u->out); return NULL; }
+    size_t n = strlen(buf);
+    while (n && (buf[n-1] == '\n' || buf[n-1] == '\r')) buf[--n] = '\0';
+    return xstrdup(buf);
+}
+
 /* Debug log sink: append one line to the log file when --log/ANACHRON_LOG is set. */
 static void ui_log(const char *text, void *ud) {
     ui *u = ud;
@@ -595,6 +624,8 @@ static void ui_tool_call(const tool_call *c, void *ud) {
         case TC_GLOB:        tool_card(u, "Glob", c->pattern ? c->pattern : ""); break;
         case TC_SCREENSHOT:  tool_card(u, "Screenshot", c->path ? c->path : ""); break;
         case TC_FETCH:       tool_card(u, "Fetch", c->url ? c->url : ""); break;
+        case TC_WEBSEARCH:   tool_card(u, "WebSearch", c->query ? c->query : ""); break;
+        case TC_ASK:         tool_card(u, "Ask", NULL); break;
         case TC_AGENT:
             if (c->ntasks > 0) {
                 snprintf(a, sizeof a, "%lu tasks in parallel", (unsigned long)c->ntasks);
@@ -969,10 +1000,18 @@ static char *load_grammar(const char *path) {
     return buf;
 }
 
-/* Load the project context file (AGENTS.md, else CRUSH.md) from the sandbox into a
- * malloc'd, size-capped string for the system prompt. NULL if neither exists. */
+/* Extra rules files named by the config's "instructions": [paths] — read at
+ * config time (relative to the cwd), concatenated into this buffer. */
+static char *g_instructions_text = NULL;
+static int env_truthy(const char *name);
+
+/* Project rules, assembled from (in order): the project's AGENTS.md (with
+ * CRUSH.md and CLAUDE.md as fallbacks; first match wins), the user's global
+ * ~/.anachron/AGENTS.md (skipped in hermetic mode), and any config
+ * "instructions" files. All size-capped; NULL when there is nothing. */
 static char *load_project_context(const char *sandbox) {
-    static const char *const names[] = { "AGENTS.md", "CRUSH.md", NULL };
+    strbuf all; sb_init(&all);
+    static const char *const names[] = { "AGENTS.md", "CRUSH.md", "CLAUDE.md", NULL };
     for (int i = 0; names[i]; i++) {
         char *abs = NULL;
         if (sandbox_resolve(sandbox, names[i], &abs) != 0) continue;
@@ -982,9 +1021,35 @@ static char *load_project_context(const char *sandbox) {
         if (rc != 0) continue;
         char *capped = obs_capped(buf, 400, 12000); /* don't let it blow the ctx */
         free(buf);
-        return capped;
+        sb_append(&all, capped);
+        free(capped);
+        break;
     }
-    return NULL;
+    if (!env_truthy("ANACHRON_NO_CONFIG")) {
+        const char *home = getenv("HOME");
+        if (!home || !*home) home = getenv("USERPROFILE");
+        if (home && *home) {
+            char gp[1024];
+            snprintf(gp, sizeof gp, "%s/.anachron/AGENTS.md", home);
+            char *buf = NULL; size_t len = 0;
+            if (plat_read_file(gp, &buf, &len) == 0) {
+                char *capped = obs_capped(buf, 200, 6000);
+                free(buf);
+                if (all.len) sb_append(&all, "\n\n");
+                sb_append(&all, "Global user preferences (~/.anachron/AGENTS.md):\n");
+                sb_append(&all, capped);
+                free(capped);
+            }
+        }
+    }
+    if (g_instructions_text && *g_instructions_text) {
+        if (all.len) sb_append(&all, "\n\n");
+        sb_append(&all, g_instructions_text);
+    }
+    if (all.len == 0) { sb_free(&all); return NULL; }
+    char *r = xstrdup(sb_cstr(&all));
+    sb_free(&all);
+    return r;
 }
 
 /* Expand "@path" mentions in a user line: leave the line intact and append the
@@ -1481,7 +1546,12 @@ static int read_line(strbuf *task) {
  * Sessions are flat JSON files under <sandbox>/.anachron-sessions/. The dir is
  * created lazily on the first /save. */
 
-typedef enum { CMD_NOT_A_COMMAND, CMD_HANDLED, CMD_QUIT } cmd_result;
+typedef enum {
+    CMD_NOT_A_COMMAND,
+    CMD_HANDLED,
+    CMD_QUIT,
+    CMD_RUN_TASK    /* the command expanded into a task: run *task_out as a turn */
+} cmd_result;
 
 /* Resolve the sessions directory to an absolute path (does not create it). */
 static int sessions_dir(const char *sandbox, char **out_abs) {
@@ -1538,7 +1608,8 @@ static int session_path(const char *dir, const char *name, char **out) {
     return 0;
 }
 
-/* /undo: restore the last written/edited file from its sibling .anbak snapshot. */
+/* /undo: restore the last written/edited file from its sibling .anbak snapshot.
+ * The just-replaced content is parked in <file>.anredo so /redo can bring it back. */
 static void cmd_undo(agent_session *s, const char *sandbox) {
     if (!s->last_write) {
         fprintf(stdout, "nothing to undo\n");
@@ -1549,23 +1620,54 @@ static void cmd_undo(agent_session *s, const char *sandbox) {
         fprintf(stdout, "cannot resolve %s\n", s->last_write);
         return;
     }
-    strbuf bak;
-    sb_init(&bak);
-    sb_appendf(&bak, "%s.anbak", abs);
+    strbuf bak, redo;
+    sb_init(&bak);  sb_appendf(&bak, "%s.anbak", abs);
+    sb_init(&redo); sb_appendf(&redo, "%s.anredo", abs);
     char *prior = NULL;
     size_t plen = 0;
     if (plat_read_file(sb_cstr(&bak), &prior, &plen) != 0) {
         fprintf(stdout, "no snapshot to restore for %s "
                         "(it may have been newly created)\n", s->last_write);
-    } else if (plat_write_file(abs, prior, plen) != 0) {
-        fprintf(stdout, "found a snapshot for %s but could not restore it "
-                        "(write failed); backup kept at %s.anbak\n",
-                s->last_write, s->last_write);
     } else {
-        fprintf(stdout, "reverted %s to its pre-write contents\n", s->last_write);
+        char *cur = NULL; size_t clen = 0;   /* park what /redo will need */
+        if (plat_read_file(abs, &cur, &clen) == 0)
+            plat_write_file(sb_cstr(&redo), cur, clen);
+        free(cur);
+        if (plat_write_file(abs, prior, plen) != 0)
+            fprintf(stdout, "found a snapshot for %s but could not restore it "
+                            "(write failed); backup kept at %s.anbak\n",
+                    s->last_write, s->last_write);
+        else
+            fprintf(stdout, "reverted %s to its pre-write contents (/redo undoes this)\n",
+                    s->last_write);
     }
     free(prior);
-    sb_free(&bak);
+    sb_free(&bak); sb_free(&redo);
+    free(abs);
+}
+
+/* /redo: put back what the last /undo removed. */
+static void cmd_redo(agent_session *s, const char *sandbox) {
+    if (!s->last_write) {
+        fprintf(stdout, "nothing to redo\n");
+        return;
+    }
+    char *abs = NULL;
+    if (sandbox_resolve(sandbox, s->last_write, &abs) != 0) {
+        fprintf(stdout, "cannot resolve %s\n", s->last_write);
+        return;
+    }
+    strbuf redo; sb_init(&redo);
+    sb_appendf(&redo, "%s.anredo", abs);
+    char *content = NULL; size_t clen = 0;
+    if (plat_read_file(sb_cstr(&redo), &content, &clen) != 0)
+        fprintf(stdout, "nothing to redo for %s (no /undo this session?)\n", s->last_write);
+    else if (plat_write_file(abs, content, clen) != 0)
+        fprintf(stdout, "could not restore %s\n", s->last_write);
+    else
+        fprintf(stdout, "restored %s to its pre-undo contents\n", s->last_write);
+    free(content);
+    sb_free(&redo);
     free(abs);
 }
 
@@ -1623,6 +1725,7 @@ static int list_gguf(const char *dir, char ***out) {
  * the running model — so /model can still list "your" provider's catalog while a
  * local model is active. */
 static char g_cfg_model[192];
+static int  g_perm_override[TC_KIND_COUNT];   /* config "permission"; -1 = unset */
 static int spec_networked(const char *m);
 
 /* Should this catalog id be offered as a chat model? Filters out the modality
@@ -1858,6 +1961,71 @@ static void ui_set_model(ui *u, const char *path) {
 static char *sandbox_auto_dir(void);   /* defined with the config loader below */
 static int env_truthy(const char *name);
 
+/* ---- custom commands ------------------------------------------------------
+ * A markdown file at <sandbox>/.anachron/commands/<name>.md (or the global
+ * ~/.anachron/commands/<name>.md) becomes the /name command. The file body is
+ * a prompt template: $ARGUMENTS is replaced with everything after the command,
+ * !`cmd` runs a shell command in the sandbox and injects its output, and
+ * @file mentions are expanded later like any other task. */
+static int custom_cmd_dir(int global, const char *sandbox, char *dst, size_t n) {
+    if (!global) {
+        char *abs = NULL;
+        if (sandbox_resolve(sandbox, ".anachron/commands", &abs) != 0) return -1;
+        snprintf(dst, n, "%s", abs);
+        free(abs);
+        return 0;
+    }
+    if (env_truthy("ANACHRON_NO_CONFIG")) return -1;
+    const char *home = getenv("HOME");
+    if (!home || !*home) home = getenv("USERPROFILE");
+    if (!home || !*home) return -1;
+    snprintf(dst, n, "%s/.anachron/commands", home);
+    return 0;
+}
+
+static char *custom_cmd_expand(const char *name, const char *arg, const char *sandbox) {
+    /* Only sane command names become file lookups. */
+    for (const char *p = name; *p; p++)
+        if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_') return NULL;
+    char *tmpl = NULL; size_t tl = 0;
+    for (int g = 0; g < 2 && !tmpl; g++) {
+        char dir[1024], path[1200];
+        if (custom_cmd_dir(g, sandbox, dir, sizeof dir) != 0) continue;
+        snprintf(path, sizeof path, "%s/%s.md", dir, name);
+        plat_read_file(path, &tmpl, &tl);
+    }
+    if (!tmpl) return NULL;
+
+    strbuf out; sb_init(&out);
+    for (const char *p = tmpl; *p; ) {
+        if (strncmp(p, "$ARGUMENTS", 10) == 0) {
+            sb_append(&out, arg ? arg : "");
+            p += 10;
+        } else if (p[0] == '!' && p[1] == '`') {
+            const char *end = strchr(p + 2, '`');
+            if (!end) { sb_putc(&out, *p++); continue; }
+            char cmd[512];
+            size_t cl = (size_t)(end - (p + 2));
+            if (cl >= sizeof cmd) cl = sizeof cmd - 1;
+            memcpy(cmd, p + 2, cl); cmd[cl] = '\0';
+            char *co = NULL; size_t col = 0; int code = 0;
+            if (plat_run_command(cmd, sandbox, &co, &col, &code) == 0 && co) {
+                char *capped = obs_capped(co, 80, 4000);
+                sb_append(&out, capped);
+                free(capped);
+            }
+            free(co);
+            p = end + 1;
+        } else {
+            sb_putc(&out, *p++);
+        }
+    }
+    free(tmpl);
+    char *r = xstrdup(sb_cstr(&out));
+    sb_free(&out);
+    return r;
+}
+
 /* One /help row: the command in the tool colour, the description plain. */
 static void help_row(ui *u, const char *cmd, const char *desc) {
     fputs("  ", u->out);
@@ -1875,7 +2043,8 @@ static cmd_result handle_command(const char *line, agent_session *s,
                                  int ctx_tokens, int ctx_explicit,
                                  int max_iters, int iters_explicit,
                                  infer_ctx **backend_slot,
-                                 const session_stats *stats, ui *u) {
+                                 const session_stats *stats, ui *u,
+                                 char **task_out) {
     const char *sandbox = *sandbox_p;
     while (*line == ' ' || *line == '\t') line++;   /* tolerate leading blanks */
     if (line[0] != '/') return CMD_NOT_A_COMMAND;
@@ -1901,7 +2070,11 @@ static cmd_result handle_command(const char *line, agent_session *s,
         fputc('\n', u->out);
         ui_span(u, CR_TITLE, "conversation"); fputc('\n', u->out);
         help_row(u, "/new, /clear",  "start a fresh conversation (clears history)");
-        help_row(u, "/undo",         "revert the last write/edit from its snapshot");
+        help_row(u, "/undo, /redo",  "revert / restore the last write or edit");
+        help_row(u, "/compact",      "shrink old history now (frees context)");
+        help_row(u, "/export [f]",   "write the transcript as markdown (transcript.md)");
+        help_row(u, "/init",         "explore the project and write an AGENTS.md");
+        help_row(u, "/commands",     "list custom commands (.anachron/commands/*.md)");
         help_row(u, "/save [name]",  "save this conversation (default name: last)");
         help_row(u, "/sessions",     "list saved conversations");
         help_row(u, "/resume <name>","load a saved conversation");
@@ -2059,6 +2232,107 @@ static cmd_result handle_command(const char *line, agent_session *s,
         free(path);
         free(dir);
         return CMD_HANDLED;
+    }
+
+    if (strcmp(verb, "/redo") == 0) {
+        cmd_redo(s, sandbox);
+        return CMD_HANDLED;
+    }
+
+    if (strcmp(verb, "/init") == 0) {
+        /* Expands into a real turn: the model explores the project and writes
+         * (or refreshes) AGENTS.md. Restart afterwards to load it. */
+        *task_out = xstrdup(
+            "Explore this project (list_dir the root, read the key files - build "
+            "files, entry points, READMEs) and then write an AGENTS.md for future "
+            "agents working here: how to build and test, the layout, the "
+            "conventions, and any quirks that would trip someone up. If AGENTS.md "
+            "already exists, keep everything in it that is still true and improve "
+            "the rest. Keep it under 60 lines.");
+        return CMD_RUN_TASK;
+    }
+
+    if (strcmp(verb, "/compact") == 0) {
+        /* Manual compaction: shrink oldest history until the rendered prompt
+         * sits under half the budget (or nothing more can go). */
+        size_t budget = (size_t)((double)(s->cfg.ctx_tokens - s->cfg.ctx_tokens / 4)
+                                 * s->chars_per_tok) / 2;
+        int steps = 0;
+        strbuf p; sb_init(&p);
+        for (;;) {
+            sb_clear(&p);
+            prompt_render(&p, &s->h, s->cfg.plan_enabled, NULL,
+                          s->cfg.project_context, s->cfg.lean);
+            if (p.len <= budget) break;
+            if (!history_shrink(&s->h)) break;
+            steps++;
+        }
+        if (steps)
+            fprintf(stdout, "compacted %d old item%s (prompt now %lu chars)\n",
+                    steps, steps == 1 ? "" : "s", (unsigned long)p.len);
+        else
+            fprintf(stdout, "nothing worth compacting (prompt is %lu chars)\n",
+                    (unsigned long)p.len);
+        sb_free(&p);
+        return CMD_HANDLED;
+    }
+
+    if (strcmp(verb, "/export") == 0) {
+        const char *nm = arg[0] ? arg : "transcript.md";
+        strbuf md; sb_init(&md);
+        sb_append(&md, "# ANACHRON transcript\n");
+        for (size_t k = 0; k < s->h.count; k++) {
+            const message *m = &s->h.items[k];
+            if (m->role == MSG_USER && strncmp(m->text, "<tool_response>", 15) != 0)
+                sb_appendf(&md, "\n## you\n\n%s\n", m->text);
+            else if (m->role == MSG_ASSISTANT)
+                sb_appendf(&md, "\n## anachron\n\n%s\n", m->text);
+            else
+                sb_appendf(&md, "\n```\n%s\n```\n", m->text);
+        }
+        char *abs = NULL;
+        if (sandbox_resolve(sandbox, nm, &abs) == 0 &&
+            plat_write_file(abs, sb_cstr(&md), md.len) == 0)
+            fprintf(stdout, "exported %zu messages to %s\n", s->h.count, nm);
+        else
+            fprintf(stdout, "could not write %s\n", nm);
+        free(abs);
+        sb_free(&md);
+        return CMD_HANDLED;
+    }
+
+    if (strcmp(verb, "/commands") == 0) {
+        int shown = 0;
+        for (int g = 0; g < 2; g++) {
+            char dirbuf[1024];
+            if (custom_cmd_dir(g, sandbox, dirbuf, sizeof dirbuf) != 0) continue;
+            plat_dirlist dl;
+            if (plat_list_dir(dirbuf, &dl) != 0) continue;
+            for (size_t k = 0; k < dl.count; k++) {
+                size_t l = strlen(dl.names[k]);
+                if (dl.is_dir[k] || l <= 3 || strcmp(dl.names[k] + l - 3, ".md") != 0)
+                    continue;
+                if (!shown) fprintf(stdout, "custom commands:\n");
+                fprintf(stdout, "  /%.*s%s\n", (int)(l - 3), dl.names[k],
+                        g ? "  (global)" : "");
+                shown = 1;
+            }
+            plat_dirlist_free(&dl);
+        }
+        if (!shown)
+            fputs("no custom commands - put prompt templates in "
+                  ".anachron/commands/<name>.md ($ARGUMENTS, !`cmd`, @file work)\n",
+                  stdout);
+        return CMD_HANDLED;
+    }
+
+    /* Not a built-in: try the custom command files before giving up. */
+    {
+        char *expanded = custom_cmd_expand(verb + 1, arg, sandbox);
+        if (expanded) {
+            *task_out = expanded;
+            return CMD_RUN_TASK;
+        }
     }
 
     fprintf(stdout, "unknown command %s (try /help)\n", verb);
@@ -2301,7 +2575,9 @@ int main(int argc, char **argv) {
     const char *cfg_path = NULL;
     json_value *conf = load_config(&cfg_path);
     char *owned_model = NULL, *owned_sandbox = NULL,
-         *owned_grammar = NULL, *owned_log = NULL;
+         *owned_grammar = NULL, *owned_log = NULL, *owned_small = NULL;
+    const char *small_model = NULL;
+    for (int pi = 0; pi < TC_KIND_COUNT; pi++) g_perm_override[pi] = -1;
     if (conf) {
         const char *s;
         if ((s = json_as_str(json_obj_get(conf, "model")))) {
@@ -2334,6 +2610,47 @@ int main(int argc, char **argv) {
         want_color    = cfg_bool(conf, "color", want_color);
         yolo          = cfg_bool(conf, "yolo", yolo);
         lean          = cfg_bool(conf, "lean", lean);
+        if ((s = json_as_str(json_obj_get(conf, "small_model"))))
+            small_model = owned_small = xstrdup(s);
+        /* "instructions": ["CONTRIBUTING.md", "docs/style.md"] — extra rules
+         * files (paths relative to the current directory), joined into the
+         * system prompt beside AGENTS.md. */
+        {
+            const json_value *ins = json_obj_get(conf, "instructions");
+            if (ins && ins->type == JSON_ARRAY) {
+                strbuf t; sb_init(&t);
+                for (size_t k = 0; k < ins->count; k++) {
+                    const char *pth = json_as_str(ins->items[k]);
+                    char *buf = NULL; size_t len = 0;
+                    if (!pth || plat_read_file(pth, &buf, &len) != 0) continue;
+                    char *capped = obs_capped(buf, 200, 6000);
+                    free(buf);
+                    if (t.len) sb_append(&t, "\n\n");
+                    sb_appendf(&t, "Rules from %s:\n", pth);
+                    sb_append(&t, capped);
+                    free(capped);
+                }
+                if (t.len) g_instructions_text = xstrdup(sb_cstr(&t));
+                sb_free(&t);
+            }
+        }
+        /* "permission": {"run_command": "allow", "fetch": "deny", ...} */
+        {
+            const json_value *perm = json_obj_get(conf, "permission");
+            if (perm && perm->type == JSON_OBJECT) {
+                for (size_t k = 0; k < perm->count; k++) {
+                    const char *v = json_as_str(perm->items[k]);
+                    if (!v) continue;
+                    int p = strcmp(v, "allow") == 0 ? TOOL_ALLOW
+                          : strcmp(v, "deny") == 0  ? TOOL_DENY
+                          : strcmp(v, "ask") == 0   ? TOOL_ASK : -1;
+                    if (p < 0) continue;
+                    for (int ki = 1; ki < TC_KIND_COUNT; ki++)
+                        if (strcmp(perm->keys[k], toolcall_kind_name((tc_kind)ki)) == 0)
+                            g_perm_override[ki] = p;
+                }
+            }
+        }
         json_free(conf);
     }
 
@@ -2539,7 +2856,7 @@ int main(int argc, char **argv) {
         /* Keep a double-clicked console window open long enough to read the error. */
         if (plat_isatty_stdin()) { fputs("\nPress Enter to exit.\n", stderr); (void)getchar(); }
         free(grammar); free(grammar_act); free(project_context);
-        free(owned_model); free(owned_sandbox); free(owned_grammar); free(owned_log);
+        free(owned_model); free(owned_sandbox); free(owned_grammar); free(owned_log); free(owned_small);
         if (logf) fclose(logf);
         sb_free(&task);
         return 1;
@@ -2571,6 +2888,22 @@ int main(int argc, char **argv) {
     cfg.vision = spec_vision(model);   /* hosted chat APIs can see screenshots */
     cfg.depth = depth;                 /* spawned sub-agents must not fan out again */
     if (model) snprintf(cfg.model_spec, sizeof cfg.model_spec, "%s", model);
+    if (small_model) {                 /* config "small_model": cheaper sub-agents */
+        snprintf(cfg.small_model, sizeof cfg.small_model, "%s", small_model);
+        cfg.small_model_vision = spec_vision(small_model);
+    }
+    /* Per-tool permission policy: mutating and network-egress tools gate by
+     * default; read-only tools are always allowed; config "permission"
+     * overrides per tool ("allow" / "ask" / "deny"). */
+    cfg.tool_perm[TC_WRITE_FILE] = TOOL_ASK;
+    cfg.tool_perm[TC_EDIT] = TOOL_ASK;
+    cfg.tool_perm[TC_RUN_COMMAND] = TOOL_ASK;
+    cfg.tool_perm[TC_SCREENSHOT] = TOOL_ASK;
+    cfg.tool_perm[TC_FETCH] = TOOL_ASK;
+    cfg.tool_perm[TC_WEBSEARCH] = TOOL_ASK;
+    cfg.tool_perm[TC_AGENT] = TOOL_ASK;   /* only the parallel batch actually gates */
+    for (int pi = 0; pi < TC_KIND_COUNT; pi++)
+        if (g_perm_override[pi] >= 0) cfg.tool_perm[pi] = g_perm_override[pi];
     cfg.diff_colour = 0;   /* diff text stays plain; ui_diff() colours it per-line (both backends) */
     cfg.on_diff = ui_diff;
     cfg.on_file_change = ui_file_change;   /* /files session summary */
@@ -2586,6 +2919,7 @@ int main(int argc, char **argv) {
     cfg.on_notice = ui_notice;
     cfg.on_child_start = ui_child_start;   /* gutter-bar a sub-agent's activity */
     cfg.on_child_end = ui_child_end;
+    cfg.on_ask = ui_ask;                   /* the model may ask the human a question */
     if (print_mode) {   /* Unix filter: only the answer reaches stdout */
         cfg.on_iter_start = NULL;
         cfg.on_token = NULL;
@@ -2595,6 +2929,7 @@ int main(int argc, char **argv) {
         cfg.on_diff = NULL;
         cfg.on_message = print_answer;
         cfg.on_final = print_answer;
+        cfg.on_ask = NULL;   /* stdin was the task; nobody is on the other end */
     }
 
     agent_session session;
@@ -2705,13 +3040,16 @@ int main(int argc, char **argv) {
                 run_shell_escape(&u, sb_cstr(&task) + 1, sandbox_live);
                 continue;
             }
+            char *task_override = NULL;
             cmd_result cr = handle_command(sb_cstr(&task), &session, &sandbox_live,
                                            sandbox_auto, ctx, ctx_explicit,
                                            max_iters, iters_explicit,
-                                           &backend, &stats, &u);
+                                           &backend, &stats, &u, &task_override);
             if (cr == CMD_QUIT) break;
             if (cr == CMD_HANDLED) continue;
-            char *msg = expand_mentions(sb_cstr(&task), sandbox_live);
+            char *msg = expand_mentions(cr == CMD_RUN_TASK ? task_override
+                                                           : sb_cstr(&task), sandbox_live);
+            free(task_override);
             double t0 = plat_time_sec();
             interrupt_clear();
             plat_set_echo(0);   /* keys typed while generating won't echo as garbage;
@@ -2736,7 +3074,7 @@ int main(int argc, char **argv) {
     free(grammar);
     free(grammar_act);
     free(project_context);
-    free(owned_model); free(owned_sandbox); free(owned_grammar); free(owned_log);
+    free(owned_model); free(owned_sandbox); free(owned_grammar); free(owned_log); free(owned_small);
     free(owned_auto_sandbox);
     if (logf) fclose(logf);
     sb_free(&task);

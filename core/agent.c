@@ -223,8 +223,10 @@ static char *agent_run_parallel(const agent_config *cfg, const tool_call *call) 
         strbuf cmd; sb_init(&cmd);
         sb_appendf(&cmd, "\"%s\" -p --depth %d --sandbox \"%s\" --ctx %d",
                    self, cfg->depth + 1, cfg->sandbox_root, cfg->ctx_tokens);
-        if (cfg->model_spec[0])
-            sb_appendf(&cmd, " --model \"%s\"", cfg->model_spec);
+        const char *child_spec = cfg->small_model[0] ? cfg->small_model
+                                                     : cfg->model_spec;
+        if (child_spec[0])
+            sb_appendf(&cmd, " --model \"%s\"", child_spec);
         sb_appendf(&cmd, " < \"%s\" > \"%s\" 2> \"%s\"", tin, tout, terr);
         if (plat_spawn(sb_cstr(&cmd), NULL, &handles[launched]) == 0)
             launched++;
@@ -484,6 +486,30 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
             continue;
         }
 
+        /* ask: the model puts a question to the human and waits. Not gated —
+         * this IS the interaction. When nobody is there (print mode, EOF) the
+         * model is told to decide for itself rather than stalling. */
+        if (call.kind == TC_ASK) {
+            if (cfg->on_tool_call) cfg->on_tool_call(&call, cfg->ud);
+            char *answer = cfg->on_ask ? cfg->on_ask(call.question ? call.question : "",
+                                                     cfg->ud)
+                                       : NULL;
+            strbuf aobs; sb_init(&aobs);
+            if (answer && *answer)
+                sb_appendf(&aobs, "The user answered:\n%s", answer);
+            else
+                sb_append(&aobs, "(the user is not available to answer right now - "
+                                 "use your best judgement and proceed)");
+            if ((!answer || !*answer) && cfg->on_tool_result)
+                cfg->on_tool_result("(no answer - proceeding on judgement)", 1, cfg->ud);
+            free(answer);
+            log_kv(cfg, "result", sb_cstr(&aobs));
+            history_push(h, MSG_TOOL_RESULT, sb_cstr(&aobs));
+            sb_free(&aobs);
+            toolcall_free(&call);
+            continue;
+        }
+
         /* Sub-agent: run the task in a FRESH context on the same backend/tools
          * and feed back only its final report — the context-isolation trick
          * (summarize a folder without its contents flooding this conversation).
@@ -503,7 +529,16 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
                 toolcall_free(&call);
                 continue;
             }
-            if (cfg->confirm_tool && !cfg->confirm_tool(&call, cfg->ud)) {
+            if (cfg->tool_perm[TC_AGENT] == TOOL_DENY) {
+                const char *m = "ERROR: the agent tool is denied by this project's "
+                                "permission policy. Do the work directly.";
+                if (cfg->on_tool_result) cfg->on_tool_result("(denied by policy)", 0, cfg->ud);
+                history_push(h, MSG_TOOL_RESULT, m);
+                toolcall_free(&call);
+                continue;
+            }
+            if (cfg->confirm_tool && cfg->tool_perm[TC_AGENT] == TOOL_ASK &&
+                !cfg->confirm_tool(&call, cfg->ud)) {
                 const char *m = "User declined the parallel sub-agents. Take a different "
                                 "approach, or call final to explain what you could not do.";
                 if (cfg->on_tool_result) cfg->on_tool_result("(declined by user)", 0, cfg->ud);
@@ -539,11 +574,21 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
             ccfg.on_notice = NULL;
             strbuf report; sb_init(&report);
             ccfg.report_sink = &report;     /* ...only its captured report */
+            /* config "small_model": the sub-task runs on the cheaper spec. */
+            infer_ctx *small = NULL;
+            if (cfg->small_model[0]) {
+                small = infer_init(cfg->small_model, cfg->ctx_tokens);
+                if (small) {
+                    ccfg.infer = small;
+                    ccfg.vision = cfg->small_model_vision;
+                }
+            }
             agent_session child;
             agent_session_init(&child, &ccfg);
             if (cfg->on_child_start) cfg->on_child_start(cfg->ud);
             int crc = agent_session_run_turn(&child, call.task ? call.task : "");
             if (cfg->on_child_end) cfg->on_child_end(cfg->ud);
+            if (small) infer_free(small);
             s->turn_completion_tokens += child.turn_completion_tokens;
             strbuf obs2; sb_init(&obs2);
             if (report.len > 0)
@@ -580,13 +625,23 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
 
         if (cfg->on_tool_call) cfg->on_tool_call(&call, cfg->ud);
 
-        /* Permission gate: pause before a tool that changes files or runs a command,
-         * so the user can approve it. Read-only tools (read/list/search/glob) are never
-         * gated. A decline is fed back so the model picks another approach. */
-        if (cfg->confirm_tool &&
-            (call.kind == TC_WRITE_FILE || call.kind == TC_EDIT ||
-             call.kind == TC_RUN_COMMAND || call.kind == TC_SCREENSHOT ||
-             call.kind == TC_FETCH) &&
+        /* Permission policy (config "permission"): DENY refuses outright with a
+         * note the model can react to; ASK pauses at the interactive [y/N] gate
+         * (the default for mutating/egress tools); ALLOW skips the gate. */
+        if (cfg->tool_perm[call.kind] == TOOL_DENY) {
+            strbuf dmsg; sb_init(&dmsg);
+            sb_appendf(&dmsg, "ERROR: the %s tool is denied by this project's "
+                              "permission policy. Take a different approach, or call "
+                              "final and explain what you could not do.",
+                       toolcall_kind_name(call.kind));
+            if (cfg->on_tool_result) cfg->on_tool_result("(denied by policy)", 0, cfg->ud);
+            log_kv(cfg, "result", sb_cstr(&dmsg));
+            history_push(h, MSG_TOOL_RESULT, sb_cstr(&dmsg));
+            sb_free(&dmsg);
+            toolcall_free(&call);
+            continue;
+        }
+        if (cfg->confirm_tool && cfg->tool_perm[call.kind] == TOOL_ASK &&
             !cfg->confirm_tool(&call, cfg->ud)) {
             const char *msg = "User declined this action. Do NOT retry it - take a different "
                               "approach, or call final to explain what you could not do.";

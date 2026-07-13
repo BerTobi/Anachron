@@ -16,7 +16,9 @@ const char *toolcall_kind_name(tc_kind k) {
         case TC_GLOB:        return "glob";
         case TC_SCREENSHOT:  return "screenshot";
         case TC_FETCH:       return "fetch";
+        case TC_WEBSEARCH:   return "websearch";
         case TC_AGENT:       return "agent";
+        case TC_ASK:         return "ask";
         case TC_PLAN:        return "plan";
         case TC_FINAL:       return "final";
         default:             return "none";
@@ -31,6 +33,8 @@ void toolcall_free(tool_call *tc) {
     free(tc->pattern);
     free(tc->cmd);
     free(tc->url);
+    free(tc->query);
+    free(tc->question);
     free(tc->task);
     for (size_t i = 0; i < tc->ntasks; i++) free(tc->tasks[i]);
     free(tc->tasks);
@@ -143,6 +147,14 @@ int toolcall_parse(const char *text, tool_call *out) {
         out->kind = TC_FETCH;
         out->url = req_str(args, "url");
         ok = out->url != NULL;
+    } else if (strcmp(name, "websearch") == 0) {
+        out->kind = TC_WEBSEARCH;
+        out->query = req_str(args, "query");
+        ok = out->query != NULL;
+    } else if (strcmp(name, "ask") == 0 || strcmp(name, "question") == 0) {
+        out->kind = TC_ASK;
+        out->question = req_str(args, "question");
+        ok = out->question != NULL;
     } else if (strcmp(name, "screenshot") == 0) {
         out->kind = TC_SCREENSHOT;
         out->path = req_str(args, "path");            /* optional */

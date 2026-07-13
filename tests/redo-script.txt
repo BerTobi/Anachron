@@ -1,0 +1,3 @@
+<tool_call>{"name": "write_file", "arguments": {"path": "f.txt", "content": "v2\n"}}</tool_call>
+===
+<tool_call>{"name": "final", "arguments": {"message": "updated"}}</tool_call>

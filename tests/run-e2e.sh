@@ -67,5 +67,46 @@ assert roles.count('user') >= 2, roles          # both turns' tasks present
 assert 'tool' in roles, roles                    # first turn's tool results survived
 print('ok: --continue restores the auto-saved conversation across processes')"
 rm -rf "$SESS"
+# The ask tool: the model's question is answered by the next input line and
+# lands in the history as "The user answered".
+ASKD=$(mktemp -d)
+printf 'JSON please\n/quit\n' | ANACHRON_STUB_SCRIPT=tests/ask-script.txt ./anachron --sandbox "$ASKD" --yolo "decide" >/dev/null 2>&1
+python3 -c "
+import json
+d = json.load(open('$ASKD/.anachron-sessions/last.json'))
+joined = ' '.join(m['text'] for m in d)
+assert 'The user answered' in joined and 'JSON please' in joined, joined[-300:]
+print('ok: ask tool (question answered from input, fed back to the model)')"
+rm -rf "$ASKD"
+
+# /undo then /redo round-trips a write.
+RED=$(mktemp -d); printf 'v1\n' > "$RED/f.txt"
+OUT=$(printf 'update f\n/undo\n/redo\n/quit\n' | ANACHRON_STUB_SCRIPT=tests/redo-script.txt ./anachron --sandbox "$RED" --yolo 2>&1)
+echo "$OUT" | grep -q 'reverted f.txt' || { echo "FAIL: /undo missing"; exit 1; }
+echo "$OUT" | grep -q 'restored f.txt' || { echo "FAIL: /redo missing"; exit 1; }
+grep -q 'v2' "$RED/f.txt" || { echo "FAIL: /redo did not restore content"; exit 1; }
+rm -rf "$RED"
+echo "ok: /undo + /redo round-trip"
+
+# Custom commands: .anachron/commands/<name>.md expands with \$ARGUMENTS and !\`cmd\`.
+CC=$(mktemp -d); mkdir -p "$CC/.anachron/commands"
+printf 'Do a review of $ARGUMENTS on branch !`echo mybranch`.\n' > "$CC/.anachron/commands/review.md"
+printf '/review src/x.c\n/quit\n' | ANACHRON_STUB_SCRIPT=tests/mixed-script.txt ./anachron --sandbox "$CC" --yolo >/dev/null 2>&1
+python3 -c "
+import json
+d = json.load(open('$CC/.anachron-sessions/last.json'))
+t = d[0]['text']
+assert 'review of src/x.c' in t and 'mybranch' in t, t
+print('ok: custom command expansion (\$ARGUMENTS + shell injection)')"
+rm -rf "$CC"
+
+# Permission policy: config can deny a tool outright.
+PD=$(mktemp -d); mkdir -p "$PD/sb"
+printf '{"permission": {"run_command": "deny"}}' > "$PD/agent.json"
+printf '<tool_call>{"name": "run_command", "arguments": {"cmd": "echo hi"}}</tool_call>\n===\n<tool_call>{"name": "final", "arguments": {"message": "done"}}</tool_call>' > "$PD/s.txt"
+OUT=$(cd "$PD" && ANACHRON_NO_CONFIG= ANACHRON_STUB_SCRIPT=s.txt "$OLDPWD/anachron" --sandbox sb "try" 2>&1)
+echo "$OUT" | grep -q 'denied by policy' || { echo "FAIL: permission deny not enforced"; exit 1; }
+rm -rf "$PD"
+echo "ok: per-tool permission policy (deny)"
 echo
 echo "E2E PASS"

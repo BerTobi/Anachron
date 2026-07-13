@@ -53,6 +53,20 @@ BIGGER BRAINS: REMOTE INFERENCE AND HOSTED APIS
   CONVERSATIONS SURVIVE QUITTING: every turn is auto-saved in the working
   folder; start with  --continue  (or -c) to pick up where you left off.
 
+  THE MODEL CAN ASK YOU QUESTIONS: an  ask  tool lets it pause and put a real
+  decision to you ("JSON or INI?") and wait for your typed answer.
+
+  THE MODEL CAN SEARCH THE WEB (hosted APIs only): a  websearch  tool queries
+  DuckDuckGo and reads the results as text. Asks [y/N] first.
+
+  PER-TOOL PERMISSIONS in agent.json:  "permission": {"run_command": "deny",
+  "write_file": "allow"}  - ask (default), allow (no prompt), deny (refused).
+
+  CUSTOM COMMANDS: put a prompt template in  .anachron\commands\name.md  and
+  /name runs it ($ARGUMENTS = what you typed after it). /commands lists them.
+  Also: /init writes an AGENTS.md for the project, /redo undoes /undo,
+  /compact frees context, /export saves the conversation as markdown.
+
   THE MODEL CAN DELEGATE (hosted APIs only): an  agent  tool runs a sub-agent
   with the same tools but a fresh, separate context and reports back only its
   conclusion - so "summarize every file in src" does not flood the conversation.
