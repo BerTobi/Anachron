@@ -373,10 +373,14 @@ int api_backend_open(const char *spec, int n_ctx, infer_backend *out) {
 
     const char *key = getenv("ANACHRON_API_KEY");
     if (key && *key) {
+        /* Keys never contain whitespace; strip ALL of it, not just CR/LF — a
+         * trailing space pasted into agent.json otherwise rides into the auth
+         * header and turns into an inscrutable 400 from the provider. */
         strbuf k; sb_init(&k);
         for (const char *p = key; *p; p++)
-            if (*p != '\r' && *p != '\n') sb_putc(&k, *p);
-        c->api_key = xstrdup(sb_cstr(&k));
+            if (*p != '\r' && *p != '\n' && *p != ' ' && *p != '\t')
+                sb_putc(&k, *p);
+        if (k.len > 0) c->api_key = xstrdup(sb_cstr(&k));
         sb_free(&k);
     }
     if (!c->api_key && strncmp(spec, "gemini:", 7) == 0) {
@@ -397,7 +401,21 @@ int api_backend_open(const char *spec, int n_ctx, infer_backend *out) {
         c->max_tokens = (e && atoi(e) > 0) ? atoi(e) : 8192;
     }
 
-    fprintf(stderr, "infer_api: %s -> %s (model %s)\n", label, c->url, c->model);
+    /* The key FINGERPRINT (ends + length, never the middle) makes transcription
+     * errors visible: a truncated or padded key shows a wrong length here long
+     * before the provider's unhelpful 400. */
+    if (c->api_key) {
+        size_t kl = strlen(c->api_key);
+        if (kl >= 8)
+            fprintf(stderr, "infer_api: %s -> %s (model %s, key %.4s...%s, %lu chars)\n",
+                    label, c->url, c->model, c->api_key, c->api_key + kl - 4,
+                    (unsigned long)kl);
+        else
+            fprintf(stderr, "infer_api: %s -> %s (model %s, key %lu chars - too short?)\n",
+                    label, c->url, c->model, (unsigned long)kl);
+    } else {
+        fprintf(stderr, "infer_api: %s -> %s (model %s, no key)\n", label, c->url, c->model);
+    }
 
     out->impl = c;
     out->generate = api_generate;

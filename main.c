@@ -1681,6 +1681,16 @@ static int list_api_models(const char *cur_spec, char ***out) {
     sb_free(&url);
     sb_free(&hdrs);
     if (hr != 0 || status != 200) {
+        /* Say WHY there's no catalog — a silent empty list turns a mistyped
+         * key into a mystery ("no models appear"). */
+        if (hr != 0)
+            fprintf(stdout, "  (%.*s catalog unreachable: %s)\n",
+                    (int)(strlen(prefix) - 1), prefix, err);
+        else
+            fprintf(stdout, "  (%.*s catalog refused: HTTP %d%s)\n",
+                    (int)(strlen(prefix) - 1), prefix, status,
+                    (status == 400 || status == 401 || status == 403)
+                        ? " - check the api_key in agent.json" : "");
         free(resp);
         return 0;
     }

@@ -7,6 +7,21 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-07-13
+
+### Fixed
+- **A bad API key is no longer a silent mystery.** A mistyped key produced
+  exactly two clues, both useless: an empty `/model` catalog (no explanation)
+  and the provider's bare `HTTP 400`. Now: the backend banner shows a key
+  FINGERPRINT — first/last four characters and the length, never the middle —
+  so a transcription slip is visible immediately; and `/model` says why a
+  catalog is unavailable (`gemini catalog refused: HTTP 400 - check the
+  api_key in agent.json`) instead of showing nothing.
+- API keys are stripped of ALL whitespace (was: only CR/LF), so a trailing
+  space pasted into agent.json can't ride into the auth header.
+- `agent.json.example` no longer pins `"ctx": 4096` — keeping that line while
+  switching the config to a hosted model silently capped the history budget.
+
 ## [0.15.1] - 2026-07-13
 
 ### Fixed
