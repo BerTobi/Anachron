@@ -180,10 +180,138 @@ int plat_move_file(const char *from, const char *to) {
  * XP SP3 tops out at TLS 1.0, so github.com refuses it; POSReady-patched systems
  * can succeed. Callers must treat failure as normal and fall back. Returns 0 on
  * ANY HTTP response (*status carries the code, even 4xx). */
+/* ---- curl.exe fallback ----------------------------------------------------
+ * XP's schannel never learned the ECDHE+GCM cipher suites modern sites demand
+ * (github.com refuses stock XP even WITH the POSReady TLS 1.2 patch; Google
+ * happens to keep legacy suites alive, which is why Gemini works). The escape
+ * hatch: an XP-compatible curl.exe carries its own OpenSSL, so modern TLS
+ * happens in-process. When WinINet fails on an https URL and a curl.exe sits
+ * next to anachron.exe (or on PATH), the request is retried through it —
+ * mirroring the POSIX build, which always uses the system curl for https.
+ * ANACHRON_FORCE_CURL=1 skips WinINet entirely (also the test hook). */
+static int find_curl(char *dst, size_t n) {
+    char self[1024];
+    if (plat_self_path(self, sizeof self) == 0) {
+        char *sl = strrchr(self, '\\');
+        if (sl) {
+            *sl = '\0';
+            snprintf(dst, n, "%s\\curl.exe", self);
+            if (GetFileAttributesA(dst) != INVALID_FILE_ATTRIBUTES) return 1;
+        }
+    }
+    if (SearchPathA(NULL, "curl.exe", NULL, (DWORD)n, dst, NULL) > 0) return 1;
+    return 0;
+}
+
+static int http_req_curl_win(const char *curl, const char *method, const char *url,
+                             const char *headers, const char *body, size_t body_len,
+                             char **resp, size_t *resp_len, int *status,
+                             char *errbuf, size_t errsz) {
+    char tmpdir[MAX_PATH];
+    if (!GetTempPathA(sizeof tmpdir, tmpdir)) {
+        snprintf(errbuf, errsz, "no temp directory");
+        return -1;
+    }
+    char cfgf[MAX_PATH], bodyf[MAX_PATH], outf[MAX_PATH], stf[MAX_PATH], ef[MAX_PATH];
+    if (!GetTempFileNameA(tmpdir, "anc", 0, cfgf) ||
+        !GetTempFileNameA(tmpdir, "anb", 0, bodyf) ||
+        !GetTempFileNameA(tmpdir, "ano", 0, outf) ||
+        !GetTempFileNameA(tmpdir, "ans", 0, stf) ||
+        !GetTempFileNameA(tmpdir, "ane", 0, ef)) {
+        snprintf(errbuf, errsz, "cannot create temp files");
+        return -1;
+    }
+    {   /* curl --config: one option per line; headers carry the secrets. */
+        strbuf cfg; sb_init(&cfg);
+        if (body) sb_append(&cfg, "header = \"Content-Type: application/json\"\n");
+        const char *p = headers ? headers : "";
+        while (*p) {
+            const char *nl = strstr(p, "\r\n");
+            size_t len = nl ? (size_t)(nl - p) : strlen(p);
+            if (len > 0) {
+                sb_append(&cfg, "header = \"");
+                sb_append_n(&cfg, p, len);
+                sb_append(&cfg, "\"\n");
+            }
+            p = nl ? nl + 2 : p + len;
+        }
+        plat_write_file(cfgf, sb_cstr(&cfg), cfg.len);
+        sb_free(&cfg);
+    }
+    if (body) plat_write_file(bodyf, body, body_len);
+
+    /* Certificate verification: use a ca-bundle.crt beside curl.exe when there
+     * is one; otherwise fall back to -k with a LOUD note (better than nothing
+     * on a museum OS, but say so every time). */
+    char cab[MAX_PATH + 16];
+    int have_ca = 0;
+    {
+        char dir[MAX_PATH];
+        snprintf(dir, sizeof dir, "%s", curl);
+        char *sl = strrchr(dir, '\\');
+        if (sl) {
+            *sl = '\0';
+            snprintf(cab, sizeof cab, "%s\\ca-bundle.crt", dir);
+            have_ca = GetFileAttributesA(cab) != INVALID_FILE_ATTRIBUTES;
+        }
+    }
+    if (!have_ca)
+        fprintf(stderr, "plat_http: curl.exe without ca-bundle.crt - certificate "
+                        "verification is OFF for this request\n");
+
+    strbuf cmd; sb_init(&cmd);
+    sb_appendf(&cmd, "\"%s\" -sS%s --max-time %d -X %s --config \"%s\"",
+               curl, body ? "" : "L", body ? 600 : 120, method, cfgf);
+    if (have_ca) sb_appendf(&cmd, " --cacert \"%s\"", cab);
+    else         sb_append(&cmd, " -k");
+    if (body) sb_appendf(&cmd, " --data-binary @\"%s\"", bodyf);
+    sb_appendf(&cmd, " -o \"%s\" -w %%{http_code} \"%s\" > \"%s\" 2> \"%s\"",
+               outf, url, stf, ef);
+
+    void *h = NULL;
+    int code = -1;
+    if (plat_spawn(sb_cstr(&cmd), NULL, &h) == 0) plat_wait_all(&h, 1, &code);
+    sb_free(&cmd);
+
+    char *st = NULL; size_t stl = 0;
+    plat_read_file(stf, &st, &stl);
+    int http = st ? atoi(st) : 0;
+    free(st);
+    int ok = (code == 0 && http > 0);
+    if (ok) {
+        char *buf = NULL; size_t blen = 0;
+        if (plat_read_file(outf, &buf, &blen) == 0) {
+            *resp = buf; *resp_len = blen; *status = http;
+        } else {
+            ok = 0;
+            snprintf(errbuf, errsz, "curl wrote no response file");
+        }
+    } else {
+        char *emsg = NULL; size_t el = 0;
+        plat_read_file(ef, &emsg, &el);
+        snprintf(errbuf, errsz, "curl.exe failed (exit %d%s%.120s)",
+                 code, emsg && el ? ": " : "", emsg && el ? emsg : "");
+        free(emsg);
+    }
+    DeleteFileA(cfgf); DeleteFileA(bodyf); DeleteFileA(outf);
+    DeleteFileA(stf); DeleteFileA(ef);
+    return ok ? 0 : -1;
+}
+
+static int force_curl(void) {
+    const char *e = getenv("ANACHRON_FORCE_CURL");
+    return e && *e && strcmp(e, "0") != 0;
+}
+
 int plat_http_get(const char *url, const char *headers,
                   char **resp, size_t *resp_len, int *status,
                   char *errbuf, size_t errsz) {
     if (errbuf && errsz) errbuf[0] = '\0';
+    int https = strncmp(url, "https://", 8) == 0;
+    char curlp[1024];
+    if (https && force_curl() && find_curl(curlp, sizeof curlp))
+        return http_req_curl_win(curlp, "GET", url, headers, NULL, 0,
+                                 resp, resp_len, status, errbuf, errsz);
     HINTERNET net = InternetOpenA("anachron",
                                   INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
     if (!net) {
@@ -198,6 +326,11 @@ int plat_http_get(const char *url, const char *headers,
         if (errbuf) snprintf(errbuf, errsz, "could not connect (err %lu - on stock XP "
                              "this is usually the TLS ceiling)", GetLastError());
         InternetCloseHandle(net);
+        if (https && find_curl(curlp, sizeof curlp)) {
+            fprintf(stderr, "plat_http: wininet could not reach %s - retrying via curl.exe\n", url);
+            return http_req_curl_win(curlp, "GET", url, headers, NULL, 0,
+                                     resp, resp_len, status, errbuf, errsz);
+        }
         return -1;
     }
     DWORD st = 0, slen = sizeof st;
@@ -206,6 +339,11 @@ int plat_http_get(const char *url, const char *headers,
         if (errbuf) snprintf(errbuf, errsz, "no HTTP status (err %lu)", GetLastError());
         InternetCloseHandle(req);
         InternetCloseHandle(net);
+        if (https && find_curl(curlp, sizeof curlp)) {
+            fprintf(stderr, "plat_http: wininet gave no response - retrying via curl.exe\n");
+            return http_req_curl_win(curlp, "GET", url, headers, NULL, 0,
+                                     resp, resp_len, status, errbuf, errsz);
+        }
         return -1;
     }
     *status = (int)st;
@@ -256,6 +394,13 @@ int plat_http_post(const char *url, const char *headers,
     if (win_url_split(url, &host, &port, &path, &https) != 0) {
         if (errbuf) snprintf(errbuf, errsz, "bad URL: %s", url);
         return -1;
+    }
+
+    char curlp[1024];
+    if (https && force_curl() && find_curl(curlp, sizeof curlp)) {
+        free(host); free(path);
+        return http_req_curl_win(curlp, "POST", url, headers, body, body_len,
+                                 resp, resp_len, status, errbuf, errsz);
     }
 
     int rc = -1;
@@ -329,6 +474,13 @@ done:
     if (net) InternetCloseHandle(net);
     free(host);
     free(path);
+    /* WinINet couldn't get ANY response over https: XP's cipher-suite ceiling
+     * is the usual culprit — retry through curl.exe when one is available. */
+    if (rc != 0 && https && find_curl(curlp, sizeof curlp)) {
+        fprintf(stderr, "plat_http: wininet could not reach %s - retrying via curl.exe\n", url);
+        return http_req_curl_win(curlp, "POST", url, headers, body, body_len,
+                                 resp, resp_len, status, errbuf, errsz);
+    }
     return rc;
 }
 
@@ -420,7 +572,12 @@ int plat_screenshot(const char *path, char *errbuf, size_t errsz) {
  * handle is the process HANDLE. All XP-safe. */
 int plat_spawn(const char *cmd, const char *cwd, void **handle) {
     strbuf full; sb_init(&full);
-    sb_appendf(&full, "cmd.exe /c %s", cmd);
+    /* The whole command gets ONE extra pair of quotes: `cmd /c "<cmd>"`.
+     * Without it, cmd.exe's quote-stripping rules mangle any command that
+     * BEGINS with a quoted path ("curl.exe" -o "x" -> curl.exe" -o "x),
+     * which exits 9009. With it, cmd strips the outer pair and runs the
+     * inner string intact. */
+    sb_appendf(&full, "cmd.exe /c \"%s\"", cmd);
     STARTUPINFOA si; PROCESS_INFORMATION pi;
     memset(&si, 0, sizeof si); si.cb = sizeof si;
     memset(&pi, 0, sizeof pi);

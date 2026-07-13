@@ -7,6 +7,25 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-07-13
+
+### Fixed
+- **`/update` can now reach github.com from Windows XP — via curl.exe.** The
+  real story: XP's schannel never learned the ECDHE+GCM cipher suites GitHub
+  requires, even with the POSReady TLS 1.2 patch (Google keeps legacy suites
+  alive, which is why Gemini worked while /update didn't). An XP-compatible
+  `curl.exe` carries its own OpenSSL, so: whenever WinINet fails on an https
+  URL and a `curl.exe` sits next to `anachron.exe` (or on PATH), the request
+  is retried through it — headers via a private `--config` file (secrets never
+  on a command line), certificate verification via a sibling `ca-bundle.crt`
+  (without one, `-k` is used and LOUDLY announced). This also opens
+  `anthropic:`/`openai:` to stock XP. `ANACHRON_FORCE_CURL=1` skips WinINet
+  entirely.
+- **Windows `plat_spawn` was broken for quoted paths** (`cmd /c "exe" args`
+  gets quote-mangled by cmd.exe → exit 9009). One extra pair of outer quotes
+  fixes it — this also repairs the parallel sub-agent fan-out on Windows,
+  which shared the code path and had only ever been compile-checked.
+
 ## [0.17.0] - 2026-07-13
 
 ### Added — the broad OpenCode wave

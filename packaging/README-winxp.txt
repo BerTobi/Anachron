@@ -112,7 +112,16 @@ IN A SESSION
   - Before writing a file or running a command it asks:  [y/N]   (Enter = No.)
   - /model         switch models - lists what's in models\ and lets you pick.
   - /files         what changed this session (+added -removed per file).
-  - /update        update ANACHRON itself (see UPDATING below).
+  - /update        update ANACHRON itself (see REACHING MODERN HTTPS FROM XP (github, anthropic, openai)
+  XP's built-in TLS lacks the ciphers many modern sites demand (github.com
+  refuses it; Google still accepts it, so gemini: works out of the box).
+  Fix: put an XP-compatible  curl.exe  and its  ca-bundle.crt  next to
+  anachron.exe - whenever Windows' own TLS fails, ANACHRON retries through
+  curl automatically (/update, anthropic:, openai:, fetch, websearch).
+  Without ca-bundle.crt, certificate checking is off and ANACHRON says so
+  on every request.
+
+UPDATING below).
   - @path\to\file  attach a file to your message.
   - !dir           a line starting with ! runs as a shell command (no model).
   - A line ending in \  continues on the next line (multiline input).

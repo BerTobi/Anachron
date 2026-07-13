@@ -1260,6 +1260,10 @@ static void cmd_update(ui *u) {
         ui_style(u, CR_MUTED);
 #ifdef _WIN32
         fputs("No newer version found here.\n"
+              "If the github check failed above: XP's built-in TLS cannot speak to\n"
+              "github.com at all (missing modern ciphers) - put an XP-compatible\n"
+              "curl.exe (plus its ca-bundle.crt) next to anachron.exe and /update\n"
+              "will route through it automatically.\n"
               "Offline flow: on any machine, download the newest anachron-<ver>-winxp.exe\n"
               "from github.com/BerTobi/Anachron/releases, drop it into an  updates\\  folder\n"
               "next to anachron.exe, and run /update again.\n", u->out);
