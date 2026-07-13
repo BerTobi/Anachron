@@ -7,6 +7,23 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-13
+
+### Added
+- **The release zip now ships its own modern TLS: a project-built `curl.exe`.**
+  Rather than pointing XP users at binaries from forums, `make curl-xp`
+  cross-builds curl 7.88.1 + mbedTLS 2.28.8 from checksum-pinned sources with
+  the same mingw toolchain that builds ANACHRON: static, HTTP(S)-only, ~2 MB,
+  SSE2-capped, and **import-audited like ANACHRON itself** — the first build
+  attempt was rejected by its own audit for importing `_vsnprintf_s` (mbedTLS's
+  Windows default; the exact class of bug that shipped v0.15.0 unloadable) and
+  rebuilt with plain C99 snprintf. `ca-bundle.crt` and both licenses ride
+  along; `make bundle` includes them all.
+- Validated under Wine against production GitHub: a v0.1.0-stamped build ran
+  `/update`, detected v0.17.1, downloaded the 7 MB asset over real TLS through
+  the bundled curl, verified it, and installed it — the full self-update cycle
+  Windows XP has never been able to complete.
+
 ## [0.17.1] - 2026-07-13
 
 ### Fixed

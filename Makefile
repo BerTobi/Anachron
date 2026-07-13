@@ -82,7 +82,7 @@ XP_LDFLAGS = -static -static-libgcc -static-libstdc++ -mconsole \
              -Wl,--major-subsystem-version=5 -Wl,--minor-subsystem-version=1
 LL_CSRC_WIN = $(CORE) $(TOOLS) $(INFER_NET) platform/platform_win32.c platform/png.c $(MAIN)
 
-.PHONY: install all test e2e verify-e2e noop-e2e repair-e2e recover-e2e net-e2e win llama antix xp xp-audit xp-vendor bundle clean
+.PHONY: install all test e2e verify-e2e noop-e2e repair-e2e recover-e2e net-e2e win llama antix xp xp-audit xp-vendor curl-xp bundle clean
 
 all: anachron
 
@@ -225,10 +225,23 @@ xp-vendor:
 # grammars). The model is NOT included (large, separately licensed) - see the README.
 VER    := $(shell sed -n 's/^\#define ANACHRON_VERSION "\(.*\)"/\1/p' core/version.h)
 BUNDLE := anachron-$(VER)-winxp
+# The XP-compatible curl.exe (modern TLS for /update + hosted APIs on XP).
+# Built from pinned sources; needs network + cmake, so it is its own target —
+# `bundle` ships it when dist/curl-xp/ exists and says so either way.
+curl-xp:
+	sh packaging/build-curl-xp.sh
+
 bundle: xp xp-audit
 	@rm -rf dist/$(BUNDLE) dist/$(BUNDLE).zip
 	@mkdir -p dist/$(BUNDLE)/grammars dist/$(BUNDLE)/work dist/$(BUNDLE)/models
 	cp $(XP_DIST)/anachron-xp.exe dist/$(BUNDLE)/anachron.exe
+	@if [ -f dist/curl-xp/curl.exe ]; then \
+	    cp dist/curl-xp/curl.exe dist/curl-xp/ca-bundle.crt \
+	       dist/curl-xp/CURL-LICENSE.txt dist/curl-xp/MBEDTLS-LICENSE.txt dist/$(BUNDLE)/; \
+	    echo "  (curl.exe + ca-bundle.crt included: modern TLS on XP)"; \
+	else \
+	    echo "  (dist/curl-xp missing - run 'make curl-xp' to include modern TLS; bundling without it)"; \
+	fi
 	cp grammars/toolcall.gbnf grammars/toolcall-plan.gbnf dist/$(BUNDLE)/grammars/
 	@sed 's/$$/\r/' packaging/README-winxp.txt   > dist/$(BUNDLE)/README.txt          # CRLF for Notepad
 	@sed 's/$$/\r/' packaging/agent.json.example > dist/$(BUNDLE)/agent.json.example

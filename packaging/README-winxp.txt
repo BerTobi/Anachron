@@ -114,12 +114,13 @@ IN A SESSION
   - /files         what changed this session (+added -removed per file).
   - /update        update ANACHRON itself (see REACHING MODERN HTTPS FROM XP (github, anthropic, openai)
   XP's built-in TLS lacks the ciphers many modern sites demand (github.com
-  refuses it; Google still accepts it, so gemini: works out of the box).
-  Fix: put an XP-compatible  curl.exe  and its  ca-bundle.crt  next to
-  anachron.exe - whenever Windows' own TLS fails, ANACHRON retries through
-  curl automatically (/update, anthropic:, openai:, fetch, websearch).
-  Without ca-bundle.crt, certificate checking is off and ANACHRON says so
-  on every request.
+  refuses it; Google still accepts it, so gemini: works either way).
+  THIS ZIP INCLUDES THE FIX: curl.exe (a static XP build of curl 7.88 with
+  mbedTLS, built and import-audited by this project) and ca-bundle.crt.
+  Keep both next to anachron.exe - whenever Windows' own TLS fails, ANACHRON
+  retries through curl automatically, which makes /update, anthropic:,
+  openai:, fetch and websearch all work on stock XP. Licenses included
+  (CURL-LICENSE.txt, MBEDTLS-LICENSE.txt).
 
 UPDATING below).
   - @path\to\file  attach a file to your message.
