@@ -82,7 +82,7 @@ XP_LDFLAGS = -static -static-libgcc -static-libstdc++ -mconsole \
              -Wl,--major-subsystem-version=5 -Wl,--minor-subsystem-version=1
 LL_CSRC_WIN = $(CORE) $(TOOLS) $(INFER_NET) platform/platform_win32.c platform/png.c $(MAIN)
 
-.PHONY: install all test e2e verify-e2e noop-e2e repair-e2e recover-e2e net-e2e win llama antix xp xp-vendor bundle clean
+.PHONY: install all test e2e verify-e2e noop-e2e repair-e2e recover-e2e net-e2e win llama antix xp xp-audit xp-vendor bundle clean
 
 all: anachron
 
@@ -194,6 +194,21 @@ install: anachron-llama
 	install -m 755 anachron-llama $(PREFIX)/bin/anachron
 	@echo "Installed $(PREFIX)/bin/anachron - put your defaults in ~/.anachron.json"
 
+# Symbol-level XP import audit. `objdump -p` only names the DLLs; the loader on
+# real XP fails on a single missing SYMBOL (v0.15.0 shipped _putenv_s and died
+# with "can't find the starting point of the procedure"). Wine cannot catch
+# these — its msvcrt/kernel32 are supersets of XP's. This greps every imported
+# symbol against a blocklist of known post-XP exports and fails the build on a
+# hit. Extend the list when a new one is discovered.
+XP_BAD_IMPORTS = _putenv_s|_wputenv_s|getenv_s|_dupenv_s|_wdupenv_s|fopen_s|strcpy_s|strcat_s|strncpy_s|memcpy_s|memmove_s|sprintf_s|_snprintf_s|_vsnprintf_s|_scprintf|_controlfp_s|_itoa_s|_ultoa_s|GetTickCount64|GetSystemTimePreciseAsFileTime|InitializeSRWLock|AcquireSRWLock|ReleaseSRWLock|TryAcquireSRWLock|InitializeConditionVariable|SleepConditionVariable|WakeConditionVariable|WakeAllConditionVariable|InitOnceExecuteOnce|FlsAlloc|FlsFree|FlsGetValue|FlsSetValue|CreateEventEx|CreateSemaphoreEx|GetFileInformationByHandleEx|SetFileInformationByHandle|CancelIoEx|CreateSymbolicLink|GetLogicalProcessorInformationEx|K32GetProcessMemoryInfo|RegGetValue|WSAPoll|inet_ntop|inet_pton
+xp-audit:
+	@i686-w64-mingw32-objdump -p $(XP_DIST)/anachron-xp.exe \
+	  | grep -E '^[[:space:]]+[0-9a-f]+[[:space:]]+[0-9]+[[:space:]]+[A-Za-z_]' \
+	  | awk '{print $$NF}' | sort -u \
+	  | grep -Ex '($(XP_BAD_IMPORTS))' \
+	  && { echo "XP-AUDIT FAIL: post-XP imports found (see above)"; exit 1; } \
+	  || echo "XP-AUDIT PASS: no known post-XP imports"
+
 # Refresh the vendored XP artifacts (prebuilt/xp/) from a freshly built spike-phase0
 # build-xp. Run this (then commit prebuilt/xp/) after bumping/rebuilding llama.cpp.
 xp-vendor:
@@ -210,7 +225,7 @@ xp-vendor:
 # grammars). The model is NOT included (large, separately licensed) - see the README.
 VER    := $(shell sed -n 's/^\#define ANACHRON_VERSION "\(.*\)"/\1/p' core/version.h)
 BUNDLE := anachron-$(VER)-winxp
-bundle: xp
+bundle: xp xp-audit
 	@rm -rf dist/$(BUNDLE) dist/$(BUNDLE).zip
 	@mkdir -p dist/$(BUNDLE)/grammars dist/$(BUNDLE)/work dist/$(BUNDLE)/models
 	cp $(XP_DIST)/anachron-xp.exe dist/$(BUNDLE)/anachron.exe

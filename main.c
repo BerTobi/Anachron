@@ -2136,10 +2136,17 @@ static size_t session_autoload(const char *sandbox, agent_session *s) {
 }
 
 /* Set an environment variable (the backends read their config from env, so the
- * agent.json keys are forwarded this way). */
+ * agent.json keys are forwarded this way). Windows uses _putenv, NOT _putenv_s:
+ * stock XP's msvcrt.dll does not export the _s variant, and one missing import
+ * makes the loader reject the whole exe ("can't find _putenv_s") before main()
+ * ever runs. The "NAME=value" buffer is deliberately leaked — CRT generations
+ * disagree on whether _putenv copies it, and these are set once at startup. */
 static void set_env_kv(const char *name, const char *value) {
 #ifdef _WIN32
-    _putenv_s(name, value);
+    size_t n = strlen(name) + strlen(value) + 2;
+    char *kv = xmalloc(n);
+    snprintf(kv, n, "%s=%s", name, value);
+    _putenv(kv);
 #else
     setenv(name, value, 1);
 #endif

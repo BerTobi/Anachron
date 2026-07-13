@@ -7,6 +7,22 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-07-13
+
+### Fixed
+- **Windows XP could not start any build since v0.7.0** ("Can't find the
+  starting point of the procedure _putenv_s in msvcrt.dll"): forwarding
+  agent.json keys to the environment used `_putenv_s`, which stock XP's
+  msvcrt.dll does not export — and one missing import makes the loader reject
+  the whole exe before main() runs. Now uses plain `_putenv` (XP-era). Wine
+  never caught it because Wine's msvcrt is a superset of XP's.
+
+### Added
+- `make xp-audit`: a symbol-level import audit of the XP exe against a
+  blocklist of known post-XP CRT/Win32 exports (`_s` CRT family, SRW locks,
+  condition variables, Fls*, GetTickCount64, ...). Wired into `make bundle`,
+  so a release with a bad import cannot be built again.
+
 ## [0.15.0] - 2026-07-12
 
 ### Changed
