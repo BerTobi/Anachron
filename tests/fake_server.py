@@ -50,6 +50,7 @@ LOOK_SCRIPT = [
 PORT = int(sys.argv[1])
 LOGDIR = sys.argv[2]
 cursors = {}
+flaky_429s = {"left": 2}   # a "flaky" task 429s this many times, then recovers
 
 # A task containing "fetchpage" drives the fetch flow: the model GETs a page
 # from this same server, then reports. The page has markup to strip and a
@@ -105,12 +106,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(n).decode("utf-8", "replace")
+        if "flaky" in body and flaky_429s["left"] > 0:
+            flaky_429s["left"] -= 1
+            out = json.dumps({"error": {"message": "You exceeded your current quota."}}).encode()
+            self.send_response(429)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+            return
         if "bigwrite" in body:
             script, tag = BIG_SCRIPT, "big"
         elif "lookatscreen" in body:
             script, tag = LOOK_SCRIPT, "look"
         elif "fetchpage" in body:
             script, tag = FETCH_SCRIPT, "fetch"
+        elif "flaky" in body:
+            script, tag = SCRIPT, "flaky"   # own cursor: recovery after the 429s
         else:
             script, tag = SCRIPT, ""
         key = (self.path, tag)

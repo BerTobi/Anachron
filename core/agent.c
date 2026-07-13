@@ -627,8 +627,13 @@ int agent_session_run_turn(agent_session *s, const char *user_msg) {
         toolcall_free(&call);
     }
 
-    if (!finished && !interrupt_pending())
-        NOTICE(cfg, "reached iteration cap without calling final");
+    if (!finished && !interrupt_pending()) {
+        char capmsg[120];
+        snprintf(capmsg, sizeof capmsg,
+                 "reached the iteration cap (%d) mid-task - say \"continue\" to let it "
+                 "keep going, or raise max_iters", cfg->max_iters);
+        NOTICE(cfg, capmsg);
+    }
 
     free(active_plan);
     sb_free(&prompt);

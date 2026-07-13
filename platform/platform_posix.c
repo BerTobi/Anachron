@@ -533,3 +533,8 @@ int plat_wait_all(void **handles, size_t n, int *exit_codes) {
     }
     return 0;
 }
+
+void plat_sleep_ms(int ms) {
+    struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+}

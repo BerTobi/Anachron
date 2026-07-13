@@ -7,6 +7,27 @@ and is printed by `anachron --version`.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-07-13
+
+### Fixed (both straight from the Sokoban fire test)
+- **The iteration cap follows the backend.** `max_iters` defaulted to 8 —
+  tuned to stop a looping 0.5B — and the fire test hit it three times during
+  honest edit-compile-fix loops. Hosted/remote backends now default to 32
+  (an explicit `--max-iters`/config value always wins, and `/model` switches
+  adjust it like the context budget). The cap notice now names the number and
+  says how to continue.
+- **Transient API failures are retried with backoff.** A mid-turn 429 or 5xx
+  (or a connection blip) used to kill the turn, wasting every iteration
+  already spent. The API driver now retries up to 3 times (2s/8s/20s,
+  Ctrl+C-abortable; `ANACHRON_API_RETRIES` / `ANACHRON_API_RETRY_MS` tune
+  it), with a note per attempt. Permanent errors (auth, bad request) still
+  fail fast.
+
+### Added
+- A system-prompt rule born of watching Gemini fabricate a 16-line "solver"
+  that printed SOLVABLE unconditionally: a checker must first be shown to
+  FAIL on a known-bad input before its pass means anything.
+
 ## [0.15.4] - 2026-07-13
 
 ### Fixed

@@ -58,6 +58,9 @@ int  plat_run_command(const char *cmd, const char *cwd,
 /* Monotonic-ish seconds for timing. XP-safe (GetTickCount, not GetTickCount64). */
 double plat_time_sec(void);
 
+/* Sleep for `ms` milliseconds (retry backoff). XP-safe (Sleep). */
+void plat_sleep_ms(int ms);
+
 /* Absolute path of the running executable (for the self-updater). */
 int  plat_self_path(char *buf, size_t n);
 

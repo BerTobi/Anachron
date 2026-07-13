@@ -55,7 +55,10 @@ static const char *SYSTEM_PROMPT =
     "  reading files one by one - it's faster and uses far less context.\n"
     "- All paths are relative to the working directory; you cannot escape it.\n"
     "- Before calling final, make sure it actually worked (run/compile it if you\n"
-    "  can). If you could not verify, say so - do not claim success you didn't check.";
+    "  can). If you could not verify, say so - do not claim success you didn't check.\n"
+    "- If you write a test or checker to verify something, first PROVE the checker\n"
+    "  can fail: run it on a known-bad input and show it rejecting. A checker that\n"
+    "  has never failed proves nothing.";
 
 /* ChatML markers used by Qwen2.5. */
 #define IM_START "<|im_start|>"

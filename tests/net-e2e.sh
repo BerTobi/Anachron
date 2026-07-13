@@ -117,6 +117,16 @@ grep -q 'should not appear' "$TMP/requests.log" && { echo "FAIL(fetch): script t
 grep -q '<h1>' "$TMP/requests.log" && { echo "FAIL(fetch): markup leaked"; exit 1; }
 echo "ok: fetch strips HTML; -p prints only the answer"
 
+# 9) transient failures are retried: the server 429s twice, then recovers; the
+#    turn must succeed anyway, with retry notes on stderr.
+rm -f "$TMP/sb/net.txt"
+OUT=$(ANACHRON_API_URL="http://127.0.0.1:$PORT" ANACHRON_API_RETRY_MS=50 \
+      ./anachron --model "openai:test-model" --sandbox "$TMP/sb" --yolo "flaky task: write net.txt" 2>&1)
+echo "$OUT" | grep -q 'Wrote net.txt over the wire' || { echo "FAIL(retry): turn died on 429s"; echo "$OUT" | tail -4; exit 1; }
+test "$(echo "$OUT" | grep -c 'HTTP 429 - retrying')" = "2" || { echo "FAIL(retry): expected 2 retry notes"; exit 1; }
+grep -q 'hello from the network backend' "$TMP/sb/net.txt" || { echo "FAIL(retry): no file"; exit 1; }
+echo "ok: 429s retried with backoff (turn survived, 2 retry notes)"
+
 # Wire assertions from the server's request log
 python3 - "$TMP/requests.log" <<'EOF'
 import json, sys

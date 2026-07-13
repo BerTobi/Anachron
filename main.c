@@ -1873,6 +1873,7 @@ static void help_row(ui *u, const char *cmd, const char *desc) {
 static cmd_result handle_command(const char *line, agent_session *s,
                                  char **sandbox_p, int sandbox_auto,
                                  int ctx_tokens, int ctx_explicit,
+                                 int max_iters, int iters_explicit,
                                  infer_ctx **backend_slot,
                                  const session_stats *stats, ui *u) {
     const char *sandbox = *sandbox_p;
@@ -1957,6 +1958,9 @@ static cmd_result handle_command(const char *line, agent_session *s,
         if (spec_networked(chosen) && !ctx_explicit && ctx_tokens < 131072)
             s->cfg.ctx_tokens = 131072;
         u->ctx_total = s->cfg.ctx_tokens;   /* band tracks % of the history budget */
+        s->cfg.max_iters = max_iters;       /* the iteration cap follows the backend too */
+        if (spec_networked(chosen) && !iters_explicit && max_iters < 32)
+            s->cfg.max_iters = 32;
         s->cfg.vision = spec_vision(chosen);   /* offer/withdraw the screenshot tool */
         snprintf(s->cfg.model_spec, sizeof s->cfg.model_spec, "%s", chosen);
         fprintf(stdout, "switched to model %s\n", chosen);
@@ -2278,6 +2282,7 @@ int main(int argc, char **argv) {
     int plan_enabled = 0;                /* off by default; see --plan */
     const char *log_path = NULL;         /* --log PATH or $ANACHRON_LOG; NULL = no log */
     int max_iters = 8;
+    int iters_explicit = 0;   /* --max-iters / config set it; else API backends get more */
     int ctx = 4096;  /* the system prompt + few-shot overhead is ~1.5k tokens; 2048
                         left too little room and long sessions overflowed */
     int ctx_explicit = 0;   /* --ctx / config set it; else networked backends get more */
@@ -2319,6 +2324,7 @@ int main(int argc, char **argv) {
             set_env_kv("ANACHRON_API_URL", s);
         if ((s = json_as_str(json_obj_get(conf, "remote_key"))) && !getenv("ANACHRON_REMOTE_KEY"))
             set_env_kv("ANACHRON_REMOTE_KEY", s);
+        if (json_obj_get(conf, "max_iters")) iters_explicit = 1;
         max_iters    = cfg_int(conf, "max_iters", max_iters);
         if (json_obj_get(conf, "ctx")) ctx_explicit = 1;
         ctx          = cfg_int(conf, "ctx", ctx);
@@ -2342,6 +2348,7 @@ int main(int argc, char **argv) {
             sandbox = ".";   /* Claude-Code style: the folder you're standing in */
         } else if (strcmp(a, "--max-iters") == 0 && i + 1 < argc) {
             max_iters = atoi(argv[++i]);
+            iters_explicit = 1;
         } else if (strcmp(a, "--ctx") == 0 && i + 1 < argc) {
             ctx = atoi(argv[++i]);
             ctx_explicit = 1;
@@ -2501,6 +2508,10 @@ int main(int argc, char **argv) {
      * under big hosted windows (Gemini: 1M) while bounding what a turn re-uploads
      * per tool step; --ctx overrides in either direction. */
     if (!ctx_explicit && spec_networked(model)) ctx = 131072;
+    /* Same reasoning for the iteration cap: 8 keeps a looping 0.5B from spinning,
+     * but a hosted model doing an honest edit-compile-fix loop needs real room —
+     * the Sokoban fire test hit the cap three times mid-debug. */
+    if (!iters_explicit && spec_networked(model)) max_iters = 32;
 
     /* "auto": every conversation gets its own fresh folder — unless --continue,
      * which re-enters the NEWEST existing session folder instead. */
@@ -2696,6 +2707,7 @@ int main(int argc, char **argv) {
             }
             cmd_result cr = handle_command(sb_cstr(&task), &session, &sandbox_live,
                                            sandbox_auto, ctx, ctx_explicit,
+                                           max_iters, iters_explicit,
                                            &backend, &stats, &u);
             if (cr == CMD_QUIT) break;
             if (cr == CMD_HANDLED) continue;

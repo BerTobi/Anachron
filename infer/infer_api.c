@@ -22,6 +22,7 @@
  * are sent. OpenAI-compatible servers accept temperature; 0 keeps local models
  * deterministic. */
 #include "infer_backend.h"
+#include "interrupt.h"   /* Ctrl+C aborts the retry backoff */
 #include "platform.h"
 #include "prompt.h"
 #include "strbuf.h"
@@ -223,11 +224,40 @@ static int api_generate(void *impl, const char *prompt, const char *grammar,
         sb_appendf(&hdrs, "Authorization: Bearer %s\r\n", c->api_key);
     }
 
+    /* Transient failures (rate limits, 5xx, connection blips) are RETRIED with
+     * a growing backoff instead of killing the turn — a mid-turn 429 used to
+     * waste every iteration already spent (the Sokoban fire test hit this on
+     * Gemini's free tier). Permanent errors (4xx auth/shape) still fail fast.
+     * ANACHRON_API_RETRIES (default 3, 0 disables) and ANACHRON_API_RETRY_MS
+     * (base delay, default 2000) tune it; Ctrl+C aborts the wait. */
+    int max_retries = 3;
+    { const char *e = getenv("ANACHRON_API_RETRIES"); if (e && *e) max_retries = atoi(e); }
+    int base_ms = 2000;
+    { const char *e = getenv("ANACHRON_API_RETRY_MS"); if (e && atoi(e) > 0) base_ms = atoi(e); }
+
     char err[160];
     char *resp = NULL; size_t rlen = 0; int status = 0;
-    int hr = plat_http_post(c->url, hdrs.len ? sb_cstr(&hdrs) : NULL,
+    int hr;
+    for (int attempt = 0; ; attempt++) {
+        free(resp); resp = NULL; rlen = 0; status = 0;
+        hr = plat_http_post(c->url, hdrs.len ? sb_cstr(&hdrs) : NULL,
                             sb_cstr(&body), body.len,
                             &resp, &rlen, &status, err, sizeof err);
+        int transient = (hr != 0) ||
+                        status == 429 || status == 500 || status == 502 ||
+                        status == 503 || status == 504 || status == 529;
+        if (!transient || attempt >= max_retries || interrupt_pending()) break;
+        static const int mult[3] = {1, 4, 10};
+        int delay = base_ms * mult[attempt < 2 ? attempt : 2];
+        if (hr != 0)
+            fprintf(stderr, "infer_api: %s - retrying in %dms (%d/%d)\n",
+                    err, delay, attempt + 1, max_retries);
+        else
+            fprintf(stderr, "infer_api: HTTP %d - retrying in %dms (%d/%d)\n",
+                    status, delay, attempt + 1, max_retries);
+        plat_sleep_ms(delay);
+        if (interrupt_pending()) break;
+    }
     sb_free(&hdrs);
     sb_free(&body);
     if (hr != 0) {

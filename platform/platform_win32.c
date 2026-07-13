@@ -449,3 +449,7 @@ int plat_wait_all(void **handles, size_t n, int *exit_codes) {
     }
     return 0;
 }
+
+void plat_sleep_ms(int ms) {
+    Sleep((DWORD)(ms > 0 ? ms : 0));
+}
